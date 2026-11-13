@@ -1,0 +1,14 @@
+<Configuration>
+  <!-- Map the published server read-only into the sandbox. Adjust HostFolder to your checkout. -->
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\tmp\FlaUI-MCP\publish\win-x64</HostFolder>
+      <SandboxFolder>C:\WindowsComputerUse</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <Networking>Enable</Networking>
+  <LogonCommand>
+    <Command>powershell -NoExit -Command "Set-Location C:\WindowsComputerUse"</Command>
+  </LogonCommand>
+</Configuration>

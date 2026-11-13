@@ -1,0 +1,74 @@
+{
+  // Windows computer-use MCP server configuration.
+  // Default location: %LOCALAPPDATA%\WindowsComputerUse\config.json (override: --config <path> or WINDOWS_MCP_CONFIG).
+  // Comments and trailing commas are allowed. Every value below is the built-in default.
+
+  // YOLO / allow-all: fire-and-forget automation on non-critical machines. Auto-grants control to every app
+  // (blocked apps included), skips confirmation gates, the user-input pause and the password-field guard.
+  // The kill switch, focus safety, stale-ref checks and the audit log stay on. Also: --yolo or WINDOWS_MCP_YOLO=1.
+  "yolo": false,
+
+  // Per-call tool timeout (ms). Batch/wait use their own budgets.
+  "toolTimeoutMs": 30000,
+  // Per-UIA-call provider timeouts (ms) so a hung app cannot hang the server.
+  "uiaTransactionTimeoutMs": 5000,
+  "uiaConnectionTimeoutMs": 3000,
+  // Exe names automated through UIA2 instead of UIA3 (some WinForms apps behave better).
+  "uia2Apps": [],
+
+  // Screenshots: long edge is downscaled to this many pixels (model vision input size). Also: --max-edge N.
+  "maxScreenshotEdge": 1568,
+  // Snapshot budget: characters (~4 per token) and node cap after pruning.
+  "snapshotMaxChars": 24000,
+  "snapshotMaxNodes": 600,
+
+  // Kill switch (RegisterHotKey): aborts batches, releases held input, revokes control grants, halts the agent turn.
+  "killSwitchHotkey": "ctrl+alt+pause",
+
+  // User input wins: after real mouse/keyboard input, actions pause until this many idle seconds pass.
+  "idleResumeSeconds": 3.0,
+  "userInputMouseDeadZonePx": 4,
+  // How long an action waits for idle before returning status=user_active (ms).
+  "userActiveWaitMs": 8000,
+
+  // Always-on-top click-through "agent is driving" frame + badge while the control lock is held. Also: --no-overlay.
+  "overlay": true,
+
+  // "dialog": topmost native dialog for access requests / confirmations; "deny": headless, everything is refused.
+  "prompts": "dialog",
+  "promptTimeoutSeconds": 60,
+
+  // Apps that hold a tier without asking: {"notepad.exe": "control", "calc.exe": "view"}.
+  "allowlist": {},
+
+  // Refused even with a grant (unless allowBlockedApps/yolo). ".exe" entries match the process; others are title regexes.
+  "blockedApps": [
+    "consent.exe", "CredentialUIBroker.exe", "LogonUI.exe", "SecHealthUI.exe", "SecurityHealthSystray.exe",
+    "1Password.exe", "KeePass.exe", "KeePassXC.exe", "Bitwarden.exe", "LastPass.exe", "Dashlane.exe",
+    "ProtonPass.exe", "NordPass.exe",
+    "\\bWindows Security\\b", "\\bbank(ing)?\\b", "\\bPayPal\\b", "\\bVenmo\\b", "\\bCoinbase\\b", "\\bWindows Hello\\b"
+  ],
+  "allowBlockedApps": false,
+  // Block the process chain that launched this server (the harness terminal).
+  "blockHarnessTerminal": true,
+
+  // Clicks on elements whose name matches one of these need human confirmation (status=needs_user_confirmation).
+  "riskyPatterns": [
+    "\\bpay(ment)?\\b", "\\bpurchase\\b", "\\bbuy( now)?\\b", "\\bcheck ?out\\b", "\\bsend\\b", "\\btransfer\\b",
+    "\\bdelete permanently\\b", "\\bempty recycle bin\\b", "\\bformat\\b", "\\buninstall\\b", "\\bshut ?down\\b",
+    "\\brestart\\b", "\\bfactory reset\\b", "\\breset this pc\\b", "\\bconfirm payment\\b", "\\bplace order\\b"
+  ],
+  // Never type into UIA password fields (IsPassword). Off in yolo mode.
+  "passwordGuard": true,
+
+  // Append-only JSONL audit log directory ("" disables). Also: --audit-dir <dir> / --no-audit.
+  "auditDir": "%LOCALAPPDATA%\\WindowsComputerUse\\audit",
+  // Persisted "always" grants.
+  "grantsPath": "%LOCALAPPDATA%\\WindowsComputerUse\\grants.json",
+
+  // Electron/Chromium hosts: thin trees get a hint to use marks and --force-renderer-accessibility.
+  "electronApps": [
+    "Code.exe", "VSCodium.exe", "Discord.exe", "slack.exe", "Teams.exe", "ms-teams.exe", "obsidian.exe",
+    "Notion.exe", "Figma.exe", "Postman.exe", "Signal.exe", "WhatsApp.exe", "electron.exe", "Cursor.exe"
+  ]
+}

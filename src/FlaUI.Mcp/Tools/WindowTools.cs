@@ -1,167 +1,181 @@
 using System.Text.Json;
+using System.Diagnostics;
 using PlaywrightWindows.Mcp.Core;
 
 namespace PlaywrightWindows.Mcp.Tools;
 
 /// <summary>
-/// List all open windows
+/// Launches an app (path, name or AUMID with '!') and returns its window. The app is started even when
+/// control is not granted; without control the result is access_denied with the request-access next step.
 /// </summary>
-public class ListWindowsTool : ToolBase
+public sealed class LaunchTool : ToolBase
 {
-    private readonly SessionManager _sessionManager;
+    private readonly Services _s;
 
-    public ListWindowsTool(SessionManager sessionManager)
+    public LaunchTool(Services services)
     {
-        _sessionManager = sessionManager;
+        _s = services;
     }
 
-    public override string Name => "windows_list_windows";
+    public override string Name => "windows_launch";
+    public override ToolKind Kind => ToolKind.Action;
 
-    public override string Description => 
-        "List all open windows with their handles, titles, and process names. " +
-        "Use this to find windows to interact with.";
+    public override string Description =>
+        "Launches an application: a path (\"notepad.exe\" or C:\\...\\app.exe), a name resolved through the shell, " +
+        "or a Store-app AUMID containing '!' (e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe!App). Options: args " +
+        "(string array), timeout_ms (default 15000). Returns the new window { handle, hwnd, title, process, ... }. " +
+        "Note: the app is launched even when this server has no control grant for it — in that case you get " +
+        "access_denied with the window in the message; call windows_request_access (tier=control) and continue " +
+        "with the handle from the message.";
 
     public override object InputSchema => new
     {
         type = "object",
-        properties = new { }
+        properties = new
+        {
+            app = new { type = "string", description = "Path, executable name or AUMID (contains '!')" },
+            args = new { type = "array", items = new { type = "string" }, description = "Command-line arguments" },
+            timeout_ms = new { type = "integer", description = "How long to wait for a new window (default 15000)" }
+        },
+        required = new[] { "app" }
     };
 
-    public override Task<McpToolResult> ExecuteAsync(JsonElement? arguments)
+    public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
+        var app = GetStringArgument(arguments, "app") ?? throw new ToolException("bad_request", "app is required.",
+            "Pass an executable path, name (\"notepad.exe\") or Store-app AUMID containing '!'.");
+
+        var args = GetArgument<string[]?>(arguments, "args") ?? Array.Empty<string>();
+        var timeoutMs = ActionArgs.IntInRange(arguments, "timeout_ms", 15000, 1000, 60000, "a launch wait of 1000..60000 ms");
+
+        ctx.ThrowIfCancelled();
+        var launched = await Task.Run(() => _s.Session.LaunchApp(app, args, timeoutMs), ctx.Cancel);
+        var window = launched.Window;
+        ctx.ThrowIfCancelled();
+
         try
         {
-            var windows = _sessionManager.ListWindows();
-
-            if (windows.Count == 0)
-            {
-                return Task.FromResult(TextResult("No windows found"));
-            }
-
-            var lines = windows.Select(w => 
-                $"- {w.handle}: \"{w.title}\" ({w.processName ?? "unknown"})");
-            
-            return Task.FromResult(TextResult(string.Join("\n", lines)));
+            await ctx.Gate.EnsureControlAsync(window, ctx);
         }
-        catch (Exception ex)
+        catch (ToolException ex) when (ex.Code is "access_denied" or "blocked_app")
         {
-            return Task.FromResult(ErrorResult($"Failed to list windows: {ex.Message}"));
+            throw new ToolException(ex.Code,
+                $"{window.ProcessName} was launched (window {window.Handle}) but is not permitted for automation: {ex.Message}",
+                ex.Next);
         }
+
+        return JsonResult(new
+        {
+            ok = true,
+            window = window.ToJson(),
+            new_window = launched.NewWindow,
+            note = launched.NewWindow ? null : "no new window appeared; the app activated an existing window (single-instance app or protocol handler)"
+        });
     }
 }
 
-/// <summary>
-/// Focus a window
-/// </summary>
-public class FocusWindowTool : ToolBase
+/// <summary>Brings a window to the foreground (restores it when minimized) with foreground verification.</summary>
+public sealed class FocusTool : ToolBase
 {
-    private readonly SessionManager _sessionManager;
+    private readonly Services _s;
 
-    public FocusWindowTool(SessionManager sessionManager)
+    public FocusTool(Services services)
     {
-        _sessionManager = sessionManager;
+        _s = services;
     }
 
     public override string Name => "windows_focus";
+    public override ToolKind Kind => ToolKind.Action;
 
-    public override string Description => 
-        "Bring a window to the foreground and give it focus.";
+    public override string Description =>
+        "Brings a window to the foreground (restores it first when minimized). window is a handle (\"w3\"), hwnd, " +
+        "\"pid:N\", title substring or process name (default foreground). Returns { ok, window, foreground } — " +
+        "foreground=false fails with focus_lost. Call this before windows_type/windows_key when the target may " +
+        "not be in front.";
 
     public override object InputSchema => new
     {
         type = "object",
         properties = new
         {
-            handle = new
-            {
-                type = "string",
-                description = "Window handle from windows_list_windows or windows_launch"
-            },
-            title = new
-            {
-                type = "string",
-                description = "Window title (alternative to handle). Finds first window containing this text."
-            }
+            window = new { type = "string", description = "Window handle (\"w3\"), hwnd, pid:N, title substring or process name (default foreground)" }
         }
     };
 
-    public override Task<McpToolResult> ExecuteAsync(JsonElement? arguments)
+    public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
-        var handle = GetStringArgument(arguments, "handle");
-        var title = GetStringArgument(arguments, "title");
+        var window = _s.Session.ResolveWindow(GetStringArgument(arguments, "window"));
+        await ctx.Gate.EnsureControlAsync(window, ctx);
+        ctx.ThrowIfCancelled();
 
-        try
+        if (!WindowActivation.BringToForeground(window))
         {
-            if (!string.IsNullOrEmpty(handle))
-            {
-                _sessionManager.FocusWindow(handle);
-                return Task.FromResult(TextResult($"Focused window {handle}"));
-            }
-            else if (!string.IsNullOrEmpty(title))
-            {
-                var (windowHandle, window) = _sessionManager.AttachToWindow(title);
-                window.Focus();
-                return Task.FromResult(TextResult($"Focused window \"{window.Title}\" (handle: {windowHandle})"));
-            }
-            else
-            {
-                return Task.FromResult(ErrorResult("Either 'handle' or 'title' is required"));
-            }
+            throw new ToolException("focus_lost",
+                $"Could not bring {window.Handle} (\"{window.Title}\") to the foreground.",
+                "Retry once; if it still fails, ask the user to click the window, then windows_snapshot it to continue.");
         }
-        catch (Exception ex)
-        {
-            return Task.FromResult(ErrorResult($"Failed to focus window: {ex.Message}"));
-        }
+
+        return JsonResult(new { ok = true, window = window.ToJson(), foreground = true });
     }
 }
 
-/// <summary>
-/// Close a window
-/// </summary>
-public class CloseWindowTool : ToolBase
+/// <summary>Sends WM_CLOSE and waits (up to 3 s) for the window to disappear; a save prompt may appear instead.</summary>
+public sealed class CloseTool : ToolBase
 {
-    private readonly SessionManager _sessionManager;
+    private readonly Services _s;
 
-    public CloseWindowTool(SessionManager sessionManager)
+    public CloseTool(Services services)
     {
-        _sessionManager = sessionManager;
+        _s = services;
     }
 
     public override string Name => "windows_close";
+    public override ToolKind Kind => ToolKind.Action;
 
-    public override string Description => 
-        "Close a window.";
+    public override string Description =>
+        "Closes a window politely: sends WM_CLOSE (like clicking X) and waits up to 3 s for it to disappear. " +
+        "Unsaved changes may show a save prompt instead — snapshot the window afterwards to check. Returns " +
+        "{ ok, closed, note }.";
 
     public override object InputSchema => new
     {
         type = "object",
         properties = new
         {
-            handle = new
-            {
-                type = "string",
-                description = "Window handle to close"
-            }
-        },
-        required = new[] { "handle" }
+            window = new { type = "string", description = "Window handle (\"w3\"), hwnd, pid:N, title substring or process name (default foreground)" }
+        }
     };
 
-    public override Task<McpToolResult> ExecuteAsync(JsonElement? arguments)
+    public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
-        var handle = GetStringArgument(arguments, "handle");
-        if (string.IsNullOrEmpty(handle))
+        var window = _s.Session.ResolveWindow(GetStringArgument(arguments, "window"));
+        await ctx.Gate.EnsureControlAsync(window, ctx);
+        ctx.ThrowIfCancelled();
+
+        var hwnd = window.Hwnd;
+        Native.PostMessageW(hwnd, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+
+        var sw = Stopwatch.StartNew();
+        var closed = false;
+        while (sw.ElapsedMilliseconds < 3000)
         {
-            return Task.FromResult(ErrorResult("Missing required argument: handle"));
+            if (!Native.IsWindow(hwnd))
+            {
+                closed = true;
+                break;
+            }
+            await Task.Delay(100, ctx.Cancel);
+            ctx.ThrowIfCancelled();
         }
 
-        try
+        return JsonResult(new
         {
-            _sessionManager.CloseWindow(handle);
-            return Task.FromResult(TextResult($"Closed window {handle}"));
-        }
-        catch (Exception ex)
-        {
-            return Task.FromResult(ErrorResult($"Failed to close window: {ex.Message}"));
-        }
+            ok = true,
+            window = window.Handle,
+            closed,
+            note = closed
+                ? "Closed. If the app had unsaved work a save prompt may still exist — windows_snapshot to check."
+                : "Still open after WM_CLOSE; it may be busy or asking something — windows_snapshot the window."
+        });
     }
 }

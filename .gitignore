@@ -1,51 +1,7 @@
-# .NET
 bin/
 obj/
 *.user
-*.userosscache
-*.suo
-*.cache
-*.log
-*.nupkg
-*.snupkg
-
-# IDE
 .vs/
-.vscode/
-*.csproj.user
-.idea/
-
-# Build results
-[Dd]ebug/
-[Rr]elease/
-x64/
-x86/
-build/
-[Bb]in/
-[Oo]bj/
-
-# NuGet
-packages/
-*.nuget.props
-*.nuget.targets
-project.lock.json
-project.fragment.lock.json
-artifacts/
-
-# Test results
+publish/
 TestResults/
-*.trx
-coverage/
-
-# OS generated
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# User-specific
-*.rsuser
-*.sln.docstates
-
-# Session files
-TestFlaUI/
-*.csx
+*.received.*

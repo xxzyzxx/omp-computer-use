@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using PlaywrightWindows.Mcp.Core;
@@ -6,175 +7,283 @@ using PlaywrightWindows.Mcp.Core;
 namespace PlaywrightWindows.Mcp.Tools;
 
 /// <summary>
-/// Type text into an element
+/// Types text into the focused element (or a ref/mark target it focuses first). Password fields are
+/// refused; the window is brought forward and focus-checked right before the keystrokes.
 /// </summary>
-public class TypeTool : ToolBase
+public sealed class TypeTool : ToolBase
 {
-    private readonly ElementRegistry _elementRegistry;
+    private readonly Services _s;
 
-    public TypeTool(ElementRegistry elementRegistry)
+    public TypeTool(Services services)
     {
-        _elementRegistry = elementRegistry;
+        _s = services;
     }
 
     public override string Name => "windows_type";
+    public override ToolKind Kind => ToolKind.Action;
+    public override IReadOnlyList<string> RedactedArguments => new[] { "text" };
 
-    public override string Description => 
-        "Type text into an element. The element will be focused first. " +
-        "Use this for typing without clearing existing content. Use windows_fill to replace content.";
+    public override string Description =>
+        "Types text into the focused element of the target window. Optional ref/mark: the element is focused " +
+        "first (and its window brought forward). Options: submit (press Enter afterwards, default false), " +
+        "delay_ms (per-character delay in ms, default 0). The characters are sent with synthetic keyboard input; " +
+        "text is not read back or verified. The target window must be in the foreground or focus is lost with an " +
+        "error. Password fields are refused in normal mode (YOLO bypasses the check) (password_field). " +
+        "Returns the number of characters sent. Coordinates are physical screen " +
+        "pixels; nothing here uses coordinates except ref/mark resolution.";
 
     public override object InputSchema => new
     {
         type = "object",
         properties = new
         {
-            @ref = new
-            {
-                type = "string",
-                description = "Element ref from windows_snapshot (e.g., 'w1e5'). If omitted, types to currently focused element."
-            },
-            text = new
-            {
-                type = "string",
-                description = "Text to type"
-            },
-            submit = new
-            {
-                type = "boolean",
-                description = "Press Enter after typing (default: false)"
-            }
+            text = new { type = "string", description = "Text to type (required)" },
+            @ref = new { type = "string", description = "Element ref from windows_snapshot to focus first" },
+            mark = new { type = "integer", description = "Mark number from the latest set-of-marks screenshot" },
+            window = new { type = "string", description = "Window handle/title when no ref is given (default foreground)" },
+            submit = new { type = "boolean", description = "Press Enter after the text (default false)" },
+            delay_ms = new { type = "integer", description = "Delay between characters in ms (default 0)" }
         },
         required = new[] { "text" }
     };
 
-    public override Task<McpToolResult> ExecuteAsync(JsonElement? arguments)
+    public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
-        var text = GetStringArgument(arguments, "text");
-        if (text == null)
+        var text = GetStringArgument(arguments, "text") ?? throw new ToolException("bad_request", "text is required.",
+            "Pass the text to type as a string; use windows_key for chords like ctrl+s.");
+        var submit = GetBoolArgument(arguments, "submit");
+        var delayMs = ActionArgs.IntInRange(arguments, "delay_ms", 0, 0, 1000, "a per-character delay of 0..1000 ms");
+
+        var target = TargetResolver.ResolveOptional(_s, arguments);
+        var element = target?.Element;
+        var window = target?.Window ?? _s.Session.ResolveWindow(GetStringArgument(arguments, "window"));
+
+        await ctx.Gate.EnsureControlAsync(window, ctx);
+        ctx.ThrowIfCancelled();
+
+        var isPassword = IsPasswordField(_s, window, element, target);
+        ctx.Gate.EnsureNotPasswordField(isPassword, target == null ? "the focused element" : target.TargetDescription);
+
+        var wasForeground = WindowActivation.IsForeground(window);
+        if (!wasForeground)
         {
-            return Task.FromResult(ErrorResult("Missing required argument: text"));
+            WindowActivation.BringToForeground(window);
+        }
+        element?.Element.Focus();
+        ctx.Gate.EnsureForeground(window);
+        ctx.ThrowIfCancelled();
+
+        // Send one character at a time so cancellation and real user activity interrupt between
+        // characters (bulk Keyboard.Type is uninterruptible for long text). No substring allocations;
+        // the per-char overload sends each char through FlaUI's keyboard mapping — this is not a
+        // guaranteed full-Unicode injection path (chars outside the keyboard layout's mapping may be
+        // sent as best-effort key events rather than injected as text).
+        if (text.Length > 0)
+        {
+            foreach (var c in text)
+            {
+                ctx.ThrowIfCancelled();
+                ctx.Gate.ThrowIfUserActive("the typing", ctx);
+                ctx.Gate.EnsureForeground(window);
+                Keyboard.Type(c);
+                if (delayMs > 0)
+                {
+                    await Task.Delay(delayMs, ctx.Cancel);
+                }
+            }
+
+            // Give the injected keystrokes a moment to be consumed by the target before anything
+            // else happens. The synthetic input sits in the thread/input queue while the next UIA
+            // call (e.g. an Invoke on a button) can be dispatched first and overtake it, so a
+            // subsequent action may observe stale text. This is a best-effort grace period, not a
+            // guaranteed OS queue drain.
+            await Task.Delay(100, ctx.Cancel);
+        }
+        if (submit)
+        {
+            ctx.ThrowIfCancelled();
+            ctx.Gate.ThrowIfUserActive("the submit key", ctx);
+            ctx.Gate.EnsureForeground(window);
+            try
+            {
+                HeldInput.Press(VirtualKeyShort.RETURN, ctx.Cancel);
+                await Task.Delay(15, ctx.Cancel);
+            }
+            finally
+            {
+                HeldInput.Release(VirtualKeyShort.RETURN);
+            }
+            // Same best-effort grace after the Enter release so a following UIA action cannot
+            // overtake the just-submitted input.
+            await Task.Delay(100, ctx.Cancel);
         }
 
-        var refId = GetStringArgument(arguments, "ref");
-        var submit = GetBoolArgument(arguments, "submit", false);
+        return JsonResult(new
+        {
+            ok = true,
+            method = "type",
+            target = target?.TargetDescription ?? "focused element",
+            typed = text.Length,
+            submit,
+            window = window.Handle
+        });
+    }
 
+    /// <summary>Live IsPassword when readable; falls back to what the snapshot recorded.</summary>
+    internal static bool IsPasswordField(Services services, WindowInfo window, ResolvedElement? element, ResolvedTarget? target)
+    {
         try
         {
-            // Focus element if ref provided
-            if (!string.IsNullOrEmpty(refId))
+            if (element != null && element.Element.Properties.IsPassword.ValueOrDefault)
             {
-                var element = _elementRegistry.GetElement(refId);
-                if (element == null)
-                {
-                    return Task.FromResult(ErrorResult($"Element not found: {refId}. Run windows_snapshot to refresh element refs."));
-                }
-
-                element.Focus();
-                Thread.Sleep(50); // Small delay to ensure focus
+                return true;
             }
-
-            // Type the text
-            Keyboard.Type(text);
-
-            if (submit)
+            if (element == null)
             {
-                Keyboard.Press(VirtualKeyShort.ENTER);
+                var focused = services.Session.AutomationFor(window).FocusedElement();
+                return focused?.Properties.IsPassword.ValueOrDefault ?? false;
             }
-
-            var target = string.IsNullOrEmpty(refId) ? "focused element" : refId;
-            var action = submit ? "Typed and submitted" : "Typed";
-            return Task.FromResult(TextResult($"{action} \"{text}\" into {target}"));
         }
-        catch (Exception ex)
+        catch
         {
-            return Task.FromResult(ErrorResult($"Failed to type: {ex.Message}"));
+            // Fall back to what the snapshot recorded.
         }
+        return target?.Element?.Meta.IsPassword ?? false;
     }
 }
 
 /// <summary>
-/// Fill (clear and type) an element
+/// Fills a ref/mark element with a value: ValuePattern.SetValue when supported and writable (with read-back
+/// verification), otherwise focus + select-all + type. Password fields are refused. Audit-redacted.
 /// </summary>
-public class FillTool : ToolBase
+public sealed class FillTool : ToolBase
 {
-    private readonly ElementRegistry _elementRegistry;
+    private readonly Services _s;
 
-    public FillTool(ElementRegistry elementRegistry)
+    public FillTool(Services services)
     {
-        _elementRegistry = elementRegistry;
+        _s = services;
     }
 
     public override string Name => "windows_fill";
+    public override ToolKind Kind => ToolKind.Action;
+    public override IReadOnlyList<string> RedactedArguments => new[] { "value" };
 
-    public override string Description => 
-        "Clear and fill a text field with new value. Prefers Value pattern for reliability.";
+    public override string Description =>
+        "Sets the value of an input element (ref or mark required). Prefers the UIA Value pattern (works even " +
+        "when the window is not foreground, verified by reading the value back), otherwise focuses the element " +
+        "and types with ctrl+a first. Password fields are refused in normal mode (YOLO bypasses the check) " +
+        "(password_field). Returns method " +
+        "(value|type) and verified (read-back true/false; null when typed).";
 
     public override object InputSchema => new
     {
         type = "object",
         properties = new
         {
-            @ref = new
-            {
-                type = "string",
-                description = "Element ref from windows_snapshot (e.g., 'w1e5')"
-            },
-            value = new
-            {
-                type = "string",
-                description = "Value to fill"
-            }
+            @ref = new { type = "string", description = "Element ref from windows_snapshot (required)" },
+            mark = new { type = "integer", description = "Mark number from the latest set-of-marks screenshot" },
+            value = new { type = "string", description = "New value (empty string clears via select-all + delete)" }
         },
-        required = new[] { "ref", "value" }
+        required = new[] { "value" }
     };
 
-    public override Task<McpToolResult> ExecuteAsync(JsonElement? arguments)
+    public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
-        var refId = GetStringArgument(arguments, "ref");
-        var value = GetStringArgument(arguments, "value");
-
-        if (string.IsNullOrEmpty(refId))
+        if (!HasArgument(arguments, "value"))
         {
-            return Task.FromResult(ErrorResult("Missing required argument: ref"));
+            throw new ToolException("bad_request", "value is required.",
+                "Pass the new value as a string (empty string clears the field).");
         }
-        if (value == null)
+        var value = GetStringArgument(arguments, "value") ?? "";
+        var target = TargetResolver.Resolve(_s, arguments);
+        if (target.Element == null)
         {
-            return Task.FromResult(ErrorResult("Missing required argument: value"));
-        }
-
-        var element = _elementRegistry.GetElement(refId);
-        if (element == null)
-        {
-            return Task.FromResult(ErrorResult($"Element not found: {refId}. Run windows_snapshot to refresh element refs."));
+            throw new ToolException("bad_request", "windows_fill needs ref or mark.",
+                "Snapshot the window (windows_snapshot) and pass a ref, or use windows_type to type into the focused element.");
         }
 
+        var window = target.Window;
+        var element = target.Element;
+        await ctx.Gate.EnsureControlAsync(window, ctx);
+        ctx.ThrowIfCancelled();
+        ctx.Gate.EnsureNotPasswordField(TypeTool.IsPasswordField(_s, window, element, target), target.TargetDescription);
+
+        var method = "";
+        bool? verified = null;
         try
         {
-            var elementName = element.Properties.Name.ValueOrDefault ?? refId;
-
-            // Try Value pattern first
-            if (element.Patterns.Value.IsSupported)
+            if (element.Element.Patterns.Value.IsSupported)
             {
-                var valuePattern = element.Patterns.Value.Pattern;
-                if (!valuePattern.IsReadOnly.ValueOrDefault)
+                var vp = element.Element.Patterns.Value.Pattern;
+                if (!vp.IsReadOnly.ValueOrDefault)
                 {
-                    valuePattern.SetValue(value);
-                    return Task.FromResult(TextResult($"Filled {elementName} with \"{value}\""));
+                    vp.SetValue(value);
+                    verified = string.Equals(vp.Value.ValueOrDefault, value, StringComparison.Ordinal);
+                    method = "value";
                 }
             }
-
-            // Fall back to focus + select all + type
-            element.Focus();
-            Thread.Sleep(50);
-            Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_A);
-            Thread.Sleep(50);
-            Keyboard.Type(value);
-
-            return Task.FromResult(TextResult($"Filled {elementName} with \"{value}\""));
         }
-        catch (Exception ex)
+        catch
         {
-            return Task.FromResult(ErrorResult($"Failed to fill {refId}: {ex.Message}"));
+            // Value pattern advertised but failed; fall back to focus + type.
         }
+
+        if (method.Length == 0)
+        {
+            var wasForeground = WindowActivation.IsForeground(window);
+            if (!wasForeground)
+            {
+                WindowActivation.BringToForeground(window);
+            }
+            element.Element.Focus();
+            ctx.Gate.EnsureForeground(window);
+            ctx.ThrowIfCancelled();
+            Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_A);
+            await Task.Delay(15, ctx.Cancel);
+            if (value.Length > 0)
+            {
+                // Same per-character interruptibility as windows_type (see there).
+                foreach (var c in value)
+                {
+                    ctx.ThrowIfCancelled();
+                    ctx.Gate.ThrowIfUserActive("the fill typing", ctx);
+                    ctx.Gate.EnsureForeground(window);
+                    Keyboard.Type(c);
+                }
+            }
+            else
+            {
+                ctx.ThrowIfCancelled();
+                ctx.Gate.ThrowIfUserActive("the clear key", ctx);
+                ctx.Gate.EnsureForeground(window);
+                try
+                {
+                    HeldInput.Press(VirtualKeyShort.DELETE, ctx.Cancel);
+                    await Task.Delay(15, ctx.Cancel);
+                }
+                finally
+                {
+                    HeldInput.Release(VirtualKeyShort.DELETE);
+                }
+            }
+            method = "type";
+
+            // Same best-effort grace as windows_type: injected keystrokes can still be sitting in
+            // the input queue when a subsequent UIA call runs, and that call can overtake them.
+            // Not a guaranteed OS queue drain — just a short window for the target to consume
+            // the input before the typed value is verified/returned.
+            await Task.Delay(100, ctx.Cancel);
+        }
+
+        return JsonResult(new
+        {
+            ok = true,
+            method,
+            target = target.TargetDescription,
+            value_length = value.Length,
+            verified,
+            window = window.Handle
+        });
     }
 }

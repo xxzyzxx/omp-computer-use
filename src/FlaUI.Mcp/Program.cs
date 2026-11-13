@@ -1,30 +1,52 @@
 using PlaywrightWindows.Mcp;
 using PlaywrightWindows.Mcp.Core;
+using PlaywrightWindows.Mcp.Safety;
 using PlaywrightWindows.Mcp.Tools;
 
-DpiUtility.EnablePerMonitorV2();
+var startup = ConfigLoader.Load(args);
+var config = startup.Config;
+foreach (var note in startup.Notes)
+{
+    Console.Error.WriteLine($"[config] {note}");
+}
 
-// Create shared services
-var sessionManager = new SessionManager();
-var elementRegistry = new ElementRegistry();
+using var audit = new AuditLog(config.AuditDir);
+using var ui = new UiThread();
+var state = new SafetyState(config);
+var policy = new AccessPolicy(config);
+IUserPrompter prompter = config.Prompts == "dialog" ? new DialogPrompter(ui, config) : new DenyPrompter();
+using IOverlay overlay = config.Overlay ? new ControlOverlay(ui, config) : new NullOverlay();
+ScreenCapture.CaptureScope = overlay.HideScope;
+var gate = new SafetyGate(state, policy, prompter, overlay, config);
+using var session = new SessionManager(config);
+var services = new Services(config, session, new ElementRegistry(), new FrameStore(), gate, ui, audit);
 
-// Register all tools
-var toolRegistry = new ToolRegistry();
-toolRegistry.RegisterTool(new LaunchTool(sessionManager));
-toolRegistry.RegisterTool(new SnapshotTool(sessionManager, elementRegistry));
-toolRegistry.RegisterTool(new ClickTool(elementRegistry));
-toolRegistry.RegisterTool(new TypeTool(elementRegistry));
-toolRegistry.RegisterTool(new FillTool(elementRegistry));
-toolRegistry.RegisterTool(new GetTextTool(elementRegistry));
-toolRegistry.RegisterTool(new SendKeysTool(elementRegistry));
-toolRegistry.RegisterTool(new ScreenshotTool(sessionManager, elementRegistry));
-toolRegistry.RegisterTool(new ListWindowsTool(sessionManager));
-toolRegistry.RegisterTool(new FocusWindowTool(sessionManager));
-toolRegistry.RegisterTool(new CloseWindowTool(sessionManager));
-toolRegistry.RegisterTool(new BatchTool(sessionManager, elementRegistry));
+var tools = new ToolRegistry(gate, config, audit);
+tools.RegisterTool(new StatusTool(services));
+SnapshotTools.Register(tools, services);
+ScreenshotTools.Register(tools, services);
+ActionTools.Register(tools, services);
+SafetyTools.Register(tools, services);
 
-// Create and run MCP server
-var server = new McpServer(toolRegistry);
+var server = new McpServer(tools, () => AgentInstructions.Build(config));
+gate.Notify = server.NotifyAsync;
+
+using var killSwitch = new KillSwitch(ui, config.KillSwitchHotkey, () => gate.KillSwitch($"hotkey {config.KillSwitchHotkey}"));
+using var inputMonitor = new InputMonitor(ui, state, config);
+
+audit.Event("server_start", new
+{
+    configPath = startup.ConfigPath,
+    yolo = config.Yolo,
+    hotkey = config.KillSwitchHotkey,
+    hotkeyRegistered = killSwitch.Registered,
+    inputHooks = inputMonitor.Active,
+    prompts = config.Prompts,
+    notes = startup.Notes
+});
+Console.Error.WriteLine(
+    $"windows-computer-use ready: yolo={config.Yolo} hotkey={config.KillSwitchHotkey} (registered={killSwitch.Registered}) " +
+    $"inputHooks={inputMonitor.Active} prompts={config.Prompts} overlay={config.Overlay} audit={(audit.Enabled ? audit.Directory : "off")}");
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -39,5 +61,5 @@ try
 }
 finally
 {
-    sessionManager.Dispose();
+    audit.Event("server_stop", null);
 }

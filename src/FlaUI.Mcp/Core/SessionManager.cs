@@ -1,186 +1,390 @@
+using System.Diagnostics;
+using System.Drawing;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
+using FlaUI.UIA2;
 using FlaUI.UIA3;
-using FlaUIApplication = FlaUI.Core.Application;
 
 namespace PlaywrightWindows.Mcp.Core;
 
+/// <summary>A top-level window as the model sees it. All coordinates are physical pixels.</summary>
+public sealed record WindowInfo(
+    string Handle,
+    IntPtr Hwnd,
+    string Title,
+    uint Pid,
+    string? ProcessName,
+    string? ExePath,
+    Rectangle Bounds,
+    int MonitorId,
+    bool Minimized,
+    bool Focused,
+    string ClassName)
+{
+    public object ToJson() => new
+    {
+        handle = Handle,
+        hwnd = Hwnd.ToInt64(),
+        title = Title,
+        process = ProcessName,
+        pid = Pid,
+        monitor = MonitorId,
+        bounds = new { x = Bounds.X, y = Bounds.Y, width = Bounds.Width, height = Bounds.Height },
+        minimized = Minimized,
+        focused = Focused
+    };
+}
+
 /// <summary>
-/// Manages UI Automation sessions and launched applications
+/// Resolves window specs to live windows, hands out stable <c>wN</c> handles (one per HWND), picks the UIA
+/// flavour per process (UIA3 by default, UIA2 for configured apps) and launches applications.
 /// </summary>
 public class SessionManager : IDisposable
 {
     private readonly UIA3Automation _automation;
-    private readonly Dictionary<string, FlaUIApplication> _applications = new();
-    private readonly Dictionary<string, Window> _windows = new();
-    private int _windowCounter = 0;
+    private readonly Lazy<UIA2Automation> _uia2;
+    private readonly ServerConfig _config;
+    private readonly Dictionary<IntPtr, string> _handlesByHwnd = new();
+    private readonly Dictionary<string, IntPtr> _hwndsByHandle = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _lock = new();
+    private int _windowCounter;
 
-    public SessionManager()
+    public SessionManager(ServerConfig? config = null)
     {
-        _automation = new UIA3Automation();
+        _config = config ?? new ServerConfig();
+        _automation = new UIA3Automation
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(_config.UiaConnectionTimeoutMs),
+            TransactionTimeout = TimeSpan.FromMilliseconds(_config.UiaTransactionTimeoutMs)
+        };
+        _uia2 = new Lazy<UIA2Automation>(() => new UIA2Automation());
     }
 
     public UIA3Automation Automation => _automation;
+    public ServerConfig Config => _config;
 
-    public (string handle, Window window) LaunchApp(string appPath, string[]? args = null)
+    /// <summary>UIA flavour for a process (UIA2 only when configured for that exe).</summary>
+    public AutomationBase AutomationFor(string? processName)
+        => _config.IsUia2App(processName) ? _uia2.Value : _automation;
+
+    public AutomationBase AutomationFor(WindowInfo window) => AutomationFor(window.ProcessName);
+
+    // ----- handles -----
+
+    public string HandleFor(IntPtr hwnd)
     {
-        // Use Process.Start for more reliable launching
-        var psi = new System.Diagnostics.ProcessStartInfo
+        lock (_lock)
         {
-            FileName = appPath,
-            Arguments = args != null ? string.Join(" ", args) : "",
-            UseShellExecute = true
-        };
-        
-        var process = System.Diagnostics.Process.Start(psi);
-        if (process == null)
-        {
-            throw new Exception($"Failed to start process: {appPath}");
+            if (_handlesByHwnd.TryGetValue(hwnd, out var existing)) return existing;
+            var handle = $"w{++_windowCounter}";
+            _handlesByHwnd[hwnd] = handle;
+            _hwndsByHandle[handle] = hwnd;
+            return handle;
         }
-        
-        // Wait for the process to be ready
-        try
-        {
-            process.WaitForInputIdle(5000);
-        }
-        catch { /* Some processes don't support this */ }
-        
-        Thread.Sleep(1000); // Extra wait for window to appear
-        
-        // Find window by process ID from desktop
-        var desktop = _automation.GetDesktop();
-        Window? window = null;
-        
-        // Try to find by process ID first
-        var element = desktop.FindFirstDescendant(cf => cf.ByProcessId(process.Id));
-        if (element != null)
-        {
-            window = element.AsWindow();
-        }
-        
-        // If not found, the app might have spawned a different process (common for UWP)
-        // Search by waiting for a new window
-        if (window == null)
-        {
-            // Get window count before
-            var existingTitles = new HashSet<string>(
-                _windows.Values.Select(w => w.Title).Where(t => !string.IsNullOrEmpty(t))
-            );
-            
-            // Wait and look for new windows
-            for (int i = 0; i < 10 && window == null; i++)
-            {
-                Thread.Sleep(500);
-                var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-                foreach (var w in windows)
-                {
-                    var win = w.AsWindow();
-                    if (win != null && !string.IsNullOrEmpty(win.Title))
-                    {
-                        // Check if this looks like our app
-                        var title = win.Title.ToLowerInvariant();
-                        var appName = Path.GetFileNameWithoutExtension(appPath).ToLowerInvariant();
-                        if (title.Contains(appName) || !existingTitles.Contains(win.Title))
-                        {
-                            window = win;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        
-        if (window == null)
-        {
-            throw new Exception($"Could not find window for {appPath}. Try using windows_list_windows and windows_focus instead.");
-        }
-
-        var windowHandle = RegisterWindow(window);
-        return (windowHandle, window);
-    }
-
-    public (string handle, Window window) AttachToWindow(string title)
-    {
-        var desktop = _automation.GetDesktop();
-        var window = desktop.FindFirstDescendant(cf => cf.ByName(title))?.AsWindow();
-        
-        if (window == null)
-        {
-            throw new Exception($"Window not found: {title}");
-        }
-
-        var handle = RegisterWindow(window);
-        return (handle, window);
     }
 
     public string RegisterWindow(Window window)
     {
-        var handle = $"w{++_windowCounter}";
-        _windows[handle] = window;
-        return handle;
+        var hwnd = HwndOf(window);
+        return HandleFor(hwnd);
     }
 
-    public Window? GetWindow(string handle)
+    public IntPtr? HwndForHandle(string handle)
     {
-        return _windows.TryGetValue(handle, out var window) ? window : null;
-    }
-
-    public List<(string handle, string title, string? processName)> ListWindows()
-    {
-        var desktop = _automation.GetDesktop();
-        var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-        
-        var result = new List<(string, string, string?)>();
-        foreach (var w in windows)
+        lock (_lock)
         {
-            var window = w.AsWindow();
-            if (window != null && !string.IsNullOrEmpty(window.Title))
-            {
-                var handle = RegisterWindow(window);
-                string? processName = null;
-                try 
-                { 
-                    processName = window.Properties.ProcessId.TryGetValue(out var pid) 
-                        ? System.Diagnostics.Process.GetProcessById(pid).ProcessName 
-                        : null; 
-                }
-                catch { }
-                
-                result.Add((handle, window.Title, processName));
-            }
+            return _hwndsByHandle.TryGetValue(handle, out var h) ? h : null;
+        }
+    }
+
+    // ----- window info -----
+
+    public WindowInfo? TryGetWindowInfo(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !Native.IsWindow(hwnd)) return null;
+        var pid = Native.GetWindowProcessId(hwnd);
+        // Packaged apps: the frame belongs to ApplicationFrameHost.exe, the app owns the CoreWindow child.
+        var hosted = Native.GetHostedAppProcessId(hwnd);
+        if (hosted != 0) pid = hosted;
+        var exe = Native.GetProcessImagePath(pid);
+        var className = Native.GetClassName(hwnd);
+        var title = Native.GetWindowText(hwnd);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = ShellSurfaceTitle(className) ?? title;
+        }
+        var bounds = Native.GetVisibleWindowBounds(hwnd);
+        var monitor = Monitors.ForWindow(hwnd);
+        return new WindowInfo(
+            HandleFor(hwnd),
+            hwnd,
+            title,
+            pid,
+            exe != null ? Path.GetFileName(exe) : Native.GetProcessExeName(pid),
+            exe,
+            bounds,
+            monitor?.Id ?? 0,
+            Native.IsIconic(hwnd),
+            Native.GetForegroundWindow() == hwnd,
+            className);
+    }
+
+    public WindowInfo GetWindowInfo(IntPtr hwnd)
+        => TryGetWindowInfo(hwnd) ?? throw new ToolException("window_not_found", $"Window 0x{hwnd.ToInt64():X} no longer exists.",
+            "Call windows_list_windows and pick a current window.");
+
+    public WindowInfo? ForegroundWindow()
+    {
+        var fg = Native.GetForegroundWindow();
+        return fg == IntPtr.Zero ? null : TryGetWindowInfo(fg);
+    }
+
+    /// <summary>
+    /// Untitled tool windows that still carry UI an agent needs: open popup menus that no application window
+    /// owns (classic context menus, tray-icon menus) and the taskbar. Null for every other class.
+    /// </summary>
+    public static string? ShellSurfaceTitle(string? className) => className switch
+    {
+        "#32768" => "(popup menu)",
+        "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" => "(taskbar)",
+        _ => null
+    };
+
+    /// <summary>
+    /// Enumerates top-level windows front to back: visible, not cloaked, titled, and not tool windows —
+    /// except the shell surfaces named by <see cref="ShellSurfaceTitle"/>.
+    /// </summary>
+    public List<WindowInfo> ListTopLevelWindows(bool includeMinimized = true, bool includeUntitled = false)
+    {
+        var shell = Native.GetShellWindow();
+        var result = new List<WindowInfo>();
+        foreach (var hwnd in Native.TopLevelWindows())
+        {
+            if (hwnd == shell || !Native.IsWindowVisible(hwnd) || Native.IsCloaked(hwnd)) continue;
+            // Owned windows stay: dialogs (Save As, message boxes) are owned by their main window.
+            var ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
+            if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && ShellSurfaceTitle(Native.GetClassName(hwnd)) == null) continue;
+            var minimized = Native.IsIconic(hwnd);
+            if (minimized && !includeMinimized) continue;
+            var info = TryGetWindowInfo(hwnd);
+            if (info == null) continue;
+            if (!includeUntitled && string.IsNullOrWhiteSpace(info.Title)) continue;
+            if (!minimized && (info.Bounds.Width <= 0 || info.Bounds.Height <= 0)) continue;
+            result.Add(info);
         }
         return result;
     }
 
-    public void FocusWindow(string handle)
+    /// <summary>
+    /// Resolves a window spec: null/empty = foreground window; "wN" = handle; integer = HWND; "pid:N";
+    /// otherwise case-insensitive title substring, then process name (with or without .exe).
+    /// </summary>
+    public WindowInfo ResolveWindow(string? spec)
     {
-        var window = GetWindow(handle);
-        if (window == null)
+        if (string.IsNullOrWhiteSpace(spec))
         {
-            throw new Exception($"Window not found: {handle}");
+            return ForegroundWindow() ?? throw new ToolException("window_not_found", "No foreground window.",
+                "Call windows_list_windows and pass window=<handle> explicitly.");
         }
-        window.Focus();
+
+        spec = spec.Trim();
+        if (spec.StartsWith("w", StringComparison.OrdinalIgnoreCase) && spec.Length > 1 && spec[1..].All(char.IsDigit))
+        {
+            var hwnd = HwndForHandle(spec.ToLowerInvariant());
+            if (hwnd == null)
+            {
+                throw new ToolException("window_not_found", $"Unknown window handle {spec}.",
+                    "Call windows_list_windows to get current handles.");
+            }
+            return TryGetWindowInfo(hwnd.Value) ?? throw new ToolException("window_not_found", $"Window {spec} was closed.",
+                "Call windows_list_windows and pick a current window.");
+        }
+
+        if (long.TryParse(spec, out var raw) && raw > 0)
+        {
+            var info = TryGetWindowInfo(new IntPtr(raw));
+            if (info != null) return info;
+        }
+
+        if (spec.StartsWith("pid:", StringComparison.OrdinalIgnoreCase) && uint.TryParse(spec[4..], out var pid))
+        {
+            // Shell surfaces are topmost, so they enumerate first; an application window wins when one exists.
+            var byPid = ListTopLevelWindows().Where(w => w.Pid == pid)
+                .OrderBy(w => ShellSurfaceTitle(w.ClassName) != null).FirstOrDefault();
+            if (byPid != null) return byPid;
+            throw new ToolException("window_not_found", $"No top-level window for pid {pid}.",
+                "Call windows_list_windows to see available windows.");
+        }
+
+        var windows = ListTopLevelWindows();
+        var byTitle = windows.Where(w => w.Title.Contains(spec, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (byTitle.Count == 1) return byTitle[0];
+        if (byTitle.Count > 1)
+        {
+            // Prefer the exact title, then the frontmost match.
+            return byTitle.FirstOrDefault(w => string.Equals(w.Title, spec, StringComparison.OrdinalIgnoreCase)) ?? byTitle[0];
+        }
+
+        var exe = spec.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? spec : spec + ".exe";
+        var byProcess = windows.Where(w => string.Equals(w.ProcessName, exe, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(w => ShellSurfaceTitle(w.ClassName) != null).ToList();
+        if (byProcess.Count > 0) return byProcess[0];
+
+        throw new ToolException("window_not_found", $"No window matches '{spec}'.",
+            "Call windows_list_windows and use one of the listed handles, titles or process names.");
     }
 
-    public void CloseWindow(string handle)
+    /// <summary>Live FlaUI window for a resolved window (UIA2 or UIA3 per process).</summary>
+    public Window GetWindow(WindowInfo info)
     {
-        var window = GetWindow(handle);
-        if (window == null)
-        {
-            throw new Exception($"Window not found: {handle}");
-        }
-        window.Close();
-        _windows.Remove(handle);
+        var element = AutomationFor(info).FromHandle(info.Hwnd);
+        return element.AsWindow();
     }
+
+    /// <summary>Compatibility helper for callers that only have a handle string.</summary>
+    public Window? GetWindow(string handle)
+    {
+        var hwnd = HwndForHandle(handle);
+        if (hwnd == null || !Native.IsWindow(hwnd.Value)) return null;
+        var info = TryGetWindowInfo(hwnd.Value);
+        return info == null ? null : GetWindow(info);
+    }
+
+    /// <summary>Top-level HWND that hosts an element (GA_ROOT of its native handle), or zero.</summary>
+    public static IntPtr RootHwndOf(AutomationElement element)
+    {
+        try
+        {
+            if (element.Properties.NativeWindowHandle.TryGetValue(out var h) && h != IntPtr.Zero)
+            {
+                var root = Native.GetAncestor(h, Native.GA_ROOT);
+                return root == IntPtr.Zero ? h : root;
+            }
+        }
+        catch
+        {
+            // Fall through to the parent walk.
+        }
+
+        try
+        {
+            var current = element;
+            for (var i = 0; i < 64 && current != null; i++)
+            {
+                if (current.Properties.NativeWindowHandle.TryGetValue(out var h) && h != IntPtr.Zero)
+                {
+                    var root = Native.GetAncestor(h, Native.GA_ROOT);
+                    return root == IntPtr.Zero ? h : root;
+                }
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+            // Element vanished mid-walk.
+        }
+        return IntPtr.Zero;
+    }
+
+    public static IntPtr HwndOf(Window window)
+    {
+        if (window.Properties.NativeWindowHandle.TryGetValue(out var h)) return h;
+        return RootHwndOf(window);
+    }
+
+    // ----- launching -----
+
+    public sealed record LaunchResult(WindowInfo Window, bool NewWindow);
+
+    /// <summary>
+    /// Launches an application by path, name (resolved through the shell), protocol (<c>ms-settings:</c>) or AUMID
+    /// (contains '!'), then waits for a new top-level window owned by the process or appearing after launch.
+    /// Single-instance apps and protocol handlers that only activate an existing window return that window with
+    /// <see cref="LaunchResult.NewWindow"/> false.
+    /// </summary>
+    public LaunchResult LaunchApp(string app, string[]? args = null, int timeoutMs = 15000)
+    {
+        var before = ListTopLevelWindows().Select(w => w.Hwnd).ToHashSet();
+        var foregroundBefore = Native.GetForegroundWindow();
+        var isAumid = app.Contains('!') && !File.Exists(app);
+        var psi = isAumid
+            ? new ProcessStartInfo { FileName = "explorer.exe", Arguments = "shell:AppsFolder\\" + app, UseShellExecute = true }
+            : new ProcessStartInfo
+            {
+                FileName = app,
+                Arguments = args != null ? string.Join(" ", args.Select(QuoteArg)) : "",
+                UseShellExecute = true
+            };
+
+        Process? process;
+        try
+        {
+            process = Process.Start(psi);
+        }
+        catch (Exception first)
+        {
+            // Shell/protocol activation fails transiently while a previous instance of the app is shutting down.
+            Thread.Sleep(750);
+            try
+            {
+                process = Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                throw new ToolException("launch_failed", $"Failed to start {app}: {ex.Message} (first attempt: {first.Message})",
+                    "Check the path/name; for Store apps pass the AUMID (e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe!App).");
+            }
+        }
+
+        var launchedPid = process != null && !isAumid ? (uint)process.Id : 0u;
+        var sw = Stopwatch.StartNew();
+        var appName = Path.GetFileNameWithoutExtension(app);
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            var windows = ListTopLevelWindows(includeMinimized: false);
+            var byPid = launchedPid != 0 ? windows.FirstOrDefault(w => w.Pid == launchedPid) : null;
+            if (byPid != null) return new LaunchResult(byPid, true);
+
+            var fresh = windows.Where(w => !before.Contains(w.Hwnd)).ToList();
+            if (fresh.Count > 0)
+            {
+                var named = fresh.FirstOrDefault(w =>
+                    (w.ProcessName != null && w.ProcessName.Contains(appName, StringComparison.OrdinalIgnoreCase)) ||
+                    w.Title.Contains(appName, StringComparison.OrdinalIgnoreCase));
+                if (named != null) return new LaunchResult(named, true);
+                if (sw.ElapsedMilliseconds > 1500) return new LaunchResult(fresh[0], true);
+            }
+
+            // Single-instance apps and protocol launches (ms-settings:, mailto:) activate an existing window
+            // instead of creating one: after a grace period the foreground window of another process is the result.
+            if (sw.ElapsedMilliseconds > 1500)
+            {
+                var fg = Native.GetForegroundWindow();
+                var isProtocol = !isAumid && app.IndexOf(':') > 1 && !File.Exists(app) && !app.Contains('\\') && !app.Contains('/');
+                if (fg != IntPtr.Zero && (fg != foregroundBefore || isProtocol))
+                {
+                    var activated = TryGetWindowInfo(fg);
+                    if (activated != null && !activated.Minimized && activated.Pid != (uint)Environment.ProcessId)
+                    {
+                        return new LaunchResult(activated, false);
+                    }
+                }
+            }
+            Thread.Sleep(150);
+        }
+
+        throw new ToolException("launch_timeout", $"Started {app} but no new window appeared within {timeoutMs}ms.",
+            "Call windows_list_windows; the app may already be running (reuse its window) or still starting (call windows_wait with title).");
+    }
+
+    private static string QuoteArg(string a) => a.Contains(' ') && !a.StartsWith('"') ? $"\"{a}\"" : a;
 
     public void Dispose()
     {
-        foreach (var app in _applications.Values)
+        if (_uia2.IsValueCreated)
         {
-            try { app.Close(); } catch { }
+            _uia2.Value.Dispose();
         }
-        _applications.Clear();
-        _windows.Clear();
         _automation.Dispose();
     }
 }
