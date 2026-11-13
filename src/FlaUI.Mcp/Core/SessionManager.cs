@@ -107,12 +107,18 @@ public class SessionManager : IDisposable
         var hosted = Native.GetHostedAppProcessId(hwnd);
         if (hosted != 0) pid = hosted;
         var exe = Native.GetProcessImagePath(pid);
+        var className = Native.GetClassName(hwnd);
+        var title = Native.GetWindowText(hwnd);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = ShellSurfaceTitle(className) ?? title;
+        }
         var bounds = Native.GetVisibleWindowBounds(hwnd);
         var monitor = Monitors.ForWindow(hwnd);
         return new WindowInfo(
             HandleFor(hwnd),
             hwnd,
-            Native.GetWindowText(hwnd),
+            title,
             pid,
             exe != null ? Path.GetFileName(exe) : Native.GetProcessExeName(pid),
             exe,
@@ -120,7 +126,7 @@ public class SessionManager : IDisposable
             monitor?.Id ?? 0,
             Native.IsIconic(hwnd),
             Native.GetForegroundWindow() == hwnd,
-            Native.GetClassName(hwnd));
+            className);
     }
 
     public WindowInfo GetWindowInfo(IntPtr hwnd)
@@ -134,7 +140,19 @@ public class SessionManager : IDisposable
     }
 
     /// <summary>
-    /// Enumerates top-level application windows front to back: visible, not cloaked, not tool windows, titled.
+    /// Untitled tool windows that still carry UI an agent needs: open popup menus that no application window
+    /// owns (classic context menus, tray-icon menus) and the taskbar. Null for every other class.
+    /// </summary>
+    public static string? ShellSurfaceTitle(string? className) => className switch
+    {
+        "#32768" => "(popup menu)",
+        "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" => "(taskbar)",
+        _ => null
+    };
+
+    /// <summary>
+    /// Enumerates top-level windows front to back: visible, not cloaked, titled, and not tool windows —
+    /// except the shell surfaces named by <see cref="ShellSurfaceTitle"/>.
     /// </summary>
     public List<WindowInfo> ListTopLevelWindows(bool includeMinimized = true, bool includeUntitled = false)
     {
@@ -145,7 +163,7 @@ public class SessionManager : IDisposable
             if (hwnd == shell || !Native.IsWindowVisible(hwnd) || Native.IsCloaked(hwnd)) continue;
             // Owned windows stay: dialogs (Save As, message boxes) are owned by their main window.
             var ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
-            if ((ex & Native.WS_EX_TOOLWINDOW) != 0) continue;
+            if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && ShellSurfaceTitle(Native.GetClassName(hwnd)) == null) continue;
             var minimized = Native.IsIconic(hwnd);
             if (minimized && !includeMinimized) continue;
             var info = TryGetWindowInfo(hwnd);
@@ -190,7 +208,9 @@ public class SessionManager : IDisposable
 
         if (spec.StartsWith("pid:", StringComparison.OrdinalIgnoreCase) && uint.TryParse(spec[4..], out var pid))
         {
-            var byPid = ListTopLevelWindows().FirstOrDefault(w => w.Pid == pid);
+            // Shell surfaces are topmost, so they enumerate first; an application window wins when one exists.
+            var byPid = ListTopLevelWindows().Where(w => w.Pid == pid)
+                .OrderBy(w => ShellSurfaceTitle(w.ClassName) != null).FirstOrDefault();
             if (byPid != null) return byPid;
             throw new ToolException("window_not_found", $"No top-level window for pid {pid}.",
                 "Call windows_list_windows to see available windows.");
@@ -206,7 +226,8 @@ public class SessionManager : IDisposable
         }
 
         var exe = spec.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? spec : spec + ".exe";
-        var byProcess = windows.Where(w => string.Equals(w.ProcessName, exe, StringComparison.OrdinalIgnoreCase)).ToList();
+        var byProcess = windows.Where(w => string.Equals(w.ProcessName, exe, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(w => ShellSurfaceTitle(w.ClassName) != null).ToList();
         if (byProcess.Count > 0) return byProcess[0];
 
         throw new ToolException("window_not_found", $"No window matches '{spec}'.",

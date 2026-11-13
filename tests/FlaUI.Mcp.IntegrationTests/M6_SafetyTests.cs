@@ -16,7 +16,8 @@ namespace FlaUI.Mcp.IntegrationTests;
 public class M6_SafetyTests : IDisposable
 {
     private readonly TestAppFixture _f;
-    private Process? _calc;
+    // calc.exe is a stub that exits after starting the packaged app: track the app by its window's pid.
+    private uint _calcPid;
 
     public M6_SafetyTests(TestAppFixture fixture) => _f = fixture;
 
@@ -51,7 +52,7 @@ public class M6_SafetyTests : IDisposable
     [Fact]
     public async Task UnGrantedApp_SnapshotReturnsAccessDenied_ThenGrant()
     {
-        _calc = Process.Start(new ProcessStartInfo
+        _ = Process.Start(new ProcessStartInfo
         {
             FileName = "calc.exe",
             UseShellExecute = true
@@ -59,6 +60,7 @@ public class M6_SafetyTests : IDisposable
 
         var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
+        _calcPid = info!.Pid;
         var calcApp = info!.ProcessName ?? "CalculatorApp.exe";
 
         try
@@ -247,6 +249,121 @@ public class M6_SafetyTests : IDisposable
         finally
         {
             _f.SafetyState.RemoveGrant("WinFormsTestApp");
+        }
+    }
+
+    [Fact]
+    public async Task Batch_BlockedFirstStep_StopsBeforeSecondMutation_AndReportsControlFailure()
+    {
+        var winFormsHandle = _f.WinFormsHandle;
+        Assert.NotEmpty(winFormsHandle);
+        try
+        {
+            _f.SafetyState.AddGrant("WinFormsTestApp", AccessTier.Control, false, "integration test", "test");
+            var snap = _f.TakeSnapshot(winFormsHandle);
+            var clicksBefore = ClickCount(snap);
+            var clickRef = TestAppFixture.FindRef(snap, "Click Me", "button");
+            Assert.NotNull(clickRef);
+
+            // The user is active: the first click must come back as a user_active control outcome.
+            _f.SafetyState.NoteUserInput("mouse");
+
+            var batch = await _f.Call("windows_batch", new Dictionary<string, object?>
+            {
+                ["window"] = winFormsHandle,
+                ["steps"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["action"] = "click", ["ref"] = clickRef },
+                    new Dictionary<string, object?> { ["action"] = "click", ["ref"] = clickRef }
+                },
+                ["wait_stable_between"] = false,
+                ["return"] = "none"
+            }, safety: true);
+
+            // The batch itself is not an MCP error, but its payload must not claim success.
+            Assert.False(batch.IsError, $"windows_batch failed: {batch.RawText}");
+            Assert.NotNull(batch.Header);
+            Assert.Equal(false, (bool?)batch.Header!["ok"]);
+            Assert.Equal(1, (int)batch.Header!["steps_run"]!);
+            Assert.Equal(0, (int)batch.Header!["stopped_at"]!);
+
+            var results = batch.Header!["results"]!.AsArray();
+            var step = Assert.Single(results)!;
+            Assert.Equal(false, (bool?)step["ok"]);
+            Assert.Equal("user_active", step["status"]?.ToString());
+
+            // Stop-on-error held: the second mutation never ran.
+            Assert.Equal(clicksBefore, ClickCount(_f.TakeSnapshot(winFormsHandle)));
+
+            // After the user resumes, the same batch succeeds and both steps really execute.
+            var resume = await _f.Call("windows_resume", new { }, safety: true);
+            Assert.False(resume.IsError, $"windows_resume failed: {resume.RawText}");
+
+            var batch2 = await _f.Call("windows_batch", new Dictionary<string, object?>
+            {
+                ["window"] = winFormsHandle,
+                ["steps"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["action"] = "click", ["ref"] = clickRef },
+                    new Dictionary<string, object?> { ["action"] = "click", ["ref"] = clickRef }
+                },
+                ["wait_stable_between"] = false,
+                ["return"] = "none"
+            }, safety: true);
+            Assert.False(batch2.IsError, $"windows_batch failed: {batch2.RawText}");
+            Assert.NotNull(batch2.Header);
+            Assert.Equal(true, (bool?)batch2.Header!["ok"]);
+            Assert.Null(batch2.Header!["stopped_at"]?.GetValue<int?>());
+            Assert.All(batch2.Header!["results"]!.AsArray(), r => Assert.True((bool?)r!["ok"] == true, r!.ToJsonString()));
+
+            Assert.Equal(clicksBefore + 2, ClickCount(_f.TakeSnapshot(winFormsHandle)));
+        }
+        finally
+        {
+            _f.SafetyState.RemoveGrant("WinFormsTestApp");
+        }
+    }
+
+    [Fact]
+    public async Task MouseClickByRef_OnCoveredWindow_LandsOnItsOwnWindow()
+    {
+        var winFormsHandle = _f.WinFormsHandle;
+        Assert.NotEmpty(winFormsHandle);
+        var snap = _f.TakeSnapshot(winFormsHandle);
+        var line = TestAppFixture.FindLine(snap, "Click Me", "button");
+        Assert.NotNull(line);
+        var clickRef = TestAppFixture.FindRef(line!);
+        var button = TestAppFixture.Bounds(line!);
+        Assert.NotNull(clickRef);
+        Assert.NotNull(button);
+        var clicksBefore = ClickCount(snap);
+
+        // Cover the button with the other test app and give that app the foreground: a synthetic
+        // mouse click at the button's coordinates would now land on the covering window.
+        var wpf = _f.GetWpfWindow();
+        Assert.NotNull(wpf);
+        var original = wpf!.BoundingRectangle;
+        wpf.Move(button!.Value.x - 60, button.Value.y - 60);
+        try
+        {
+            var focus = await _f.Call("windows_focus", new { window = _f.WpfHandle });
+            Assert.False(focus.IsError, $"windows_focus failed: {focus.RawText}");
+            var covering = _f.FunctionalSession.ResolveWindow(_f.WpfHandle).Bounds;
+            Assert.True(
+                covering.Contains(button.Value.x + button.Value.w / 2, button.Value.y + button.Value.h / 2),
+                $"Fixture: the WPF window {covering} does not cover the WinForms button.");
+
+            var click = await _f.Call("windows_click", new Dictionary<string, object?>
+            {
+                ["ref"] = clickRef,
+                ["force_mouse"] = true
+            });
+            Assert.False(click.IsError, $"windows_click failed: {click.RawText}");
+            Assert.Equal(clicksBefore + 1, ClickCount(_f.TakeSnapshot(winFormsHandle)));
+        }
+        finally
+        {
+            wpf.Move(original.X, original.Y);
         }
     }
 
@@ -565,16 +682,14 @@ public class M6_SafetyTests : IDisposable
 
     public void Dispose()
     {
+        if (_calcPid == 0) return;
         try
         {
-            if (_calc is { HasExited: false })
-            {
-                _calc.Kill(entireProcessTree: true);
-            }
+            Process.GetProcessById((int)_calcPid).Kill();
         }
         catch
         {
-            // best effort.
+            // Already gone.
         }
     }
 }

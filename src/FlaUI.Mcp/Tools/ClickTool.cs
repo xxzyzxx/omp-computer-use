@@ -29,10 +29,11 @@ public sealed class ClickTool : ToolBase
         "Clicks a UI element or a screen point. Target: ref (from windows_snapshot), mark (from the latest " +
         "windows_screenshot marks=true) or x,y in the pixels of a recent screenshot/zoom (optionally image_id; " +
         "they are converted to physical screen pixels). Options: button left|right|middle (default left), count " +
-        "1-3 (double/triple click), modifiers [ctrl,shift,alt,win], force_mouse (skip UIA patterns and click " +
+        "1-3 (double/triple click) or 0 to hover (move the pointer there without clicking: tooltips, hover " +
+        "menus, auto-hidden UI), modifiers [ctrl,shift,alt,win], force_mouse (skip UIA patterns and click " +
         "for real). For a plain ref click, UIA patterns (Invoke/Toggle/Select/ExpandCollapse) are used when the " +
         "element supports them, otherwise a real mouse click at the element's clickable point; x,y always clicks " +
-        "for real at that physical point. Returns method (invoke|toggle|selection_item|expand_collapse|mouse), " +
+        "for real at that physical point. Returns method (invoke|toggle|selection_item|expand_collapse|mouse|hover), " +
         "the physical point used, and for refs the element role/name. Risky controls (pay, delete permanently, …) " +
         "require human confirmation first.";
 
@@ -47,7 +48,7 @@ public sealed class ClickTool : ToolBase
             y = new { type = "number", description = "y in pixels of the referenced image" },
             image_id = new { type = "string", description = "Image the coordinates belong to (default: latest image)" },
             button = new { type = "string", @enum = new[] { "left", "right", "middle" }, description = "Mouse button (default left)" },
-            count = new { type = "integer", @enum = new[] { 1, 2, 3 }, description = "Clicks: 1 single, 2 double, 3 triple (default 1)" },
+            count = new { type = "integer", @enum = new[] { 0, 1, 2, 3 }, description = "Clicks: 1 single, 2 double, 3 triple, 0 hover only (default 1)" },
             modifiers = new { type = "array", items = new { type = "string", @enum = new[] { "ctrl", "shift", "alt", "win" } }, description = "Held during a mouse click" },
             force_mouse = new { type = "boolean", description = "Always use real mouse input, even for refs (default false)" }
         }
@@ -57,7 +58,7 @@ public sealed class ClickTool : ToolBase
     {
         var target = TargetResolver.Resolve(_s, arguments);
         var button = ActionArgs.Button(arguments);
-        var count = ActionArgs.IntInRange(arguments, "count", 1, 1, 3, "1=single, 2=double, 3=triple");
+        var count = ActionArgs.IntInRange(arguments, "count", 1, 0, 3, "0=hover, 1=single, 2=double, 3=triple");
         var modifiers = ActionArgs.Modifiers(arguments);
         var forceMouse = GetBoolArgument(arguments, "force_mouse");
         var patternPath = target.Element != null && button == MouseButton.Left && count == 1 &&
@@ -71,7 +72,10 @@ public sealed class ClickTool : ToolBase
             var gatePoint = target.Physical ?? TargetResolver.PointOfElement(_s, target.Element!);
             elementName ??= TargetResolver.TryNameAtPoint(_s, target.Window, gatePoint);
         }
-        await ctx.Gate.ConfirmRiskyAsync(elementName, "click", target.Window, ctx);
+        if (count > 0)
+        {
+            await ctx.Gate.ConfirmRiskyAsync(elementName, "click", target.Window, ctx);
+        }
         ctx.ThrowIfCancelled();
 
         string? method = null;
@@ -82,6 +86,7 @@ public sealed class ClickTool : ToolBase
             if (method == null)
             {
                 point = TargetResolver.PointOfElement(_s, target.Element);
+                ctx.Gate.EnsurePointerTarget(target.Window, point);
                 method = MouseClick(point, button, count, modifiers, ctx.Cancel);
             }
             else
@@ -92,6 +97,7 @@ public sealed class ClickTool : ToolBase
         else
         {
             point = target.Physical ?? TargetResolver.PointOfElement(_s, target.Element!);
+            ctx.Gate.EnsurePointerTarget(target.Window, point);
             method = MouseClick(point, button, count, modifiers, ctx.Cancel);
         }
 
@@ -179,12 +185,17 @@ public sealed class ClickTool : ToolBase
     private static string MouseClick(Point point, MouseButton button, int count, VirtualKeyShort[] modifiers, CancellationToken cancel)
     {
         Mouse.MoveTo(point);
-        foreach (var mod in modifiers)
+        if (count == 0)
         {
-            HeldInput.Press(mod, cancel);
+            return "hover";
         }
         try
         {
+            foreach (var mod in modifiers)
+            {
+                HeldInput.Press(mod, cancel);
+            }
+            cancel.ThrowIfCancellationRequested();
             if (count == 2)
             {
                 Mouse.DoubleClick(button);
@@ -197,6 +208,7 @@ public sealed class ClickTool : ToolBase
                     {
                         Thread.Sleep(40);
                     }
+                    cancel.ThrowIfCancellationRequested();
                     Mouse.Click(button);
                 }
             }

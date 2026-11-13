@@ -26,9 +26,10 @@ public sealed class TypeTool : ToolBase
     public override string Description =>
         "Types text into the focused element of the target window. Optional ref/mark: the element is focused " +
         "first (and its window brought forward). Options: submit (press Enter afterwards, default false), " +
-        "delay_ms (per-character delay in ms, default 0). The text is typed with synthetic keyboard input; " +
-        "the target window must be in the foreground or focus is lost with an error. Password fields are " +
-        "refused (password_field). Returns the number of characters typed. Coordinates are physical screen " +
+        "delay_ms (per-character delay in ms, default 0). The characters are sent with synthetic keyboard input; " +
+        "text is not read back or verified. The target window must be in the foreground or focus is lost with an " +
+        "error. Password fields are refused in normal mode (YOLO bypasses the check) (password_field). " +
+        "Returns the number of characters sent. Coordinates are physical screen " +
         "pixels; nothing here uses coordinates except ref/mark resolution.";
 
     public override object InputSchema => new
@@ -72,34 +73,49 @@ public sealed class TypeTool : ToolBase
         ctx.Gate.EnsureForeground(window);
         ctx.ThrowIfCancelled();
 
-        // Emit one Unicode character at a time so cancellation and real user activity interrupt
-        // between characters (bulk Keyboard.Type is uninterruptible for long text). No substring
-        // allocations; the per-char overload sends the whole character.
-        foreach (var c in text)
+        // Send one character at a time so cancellation and real user activity interrupt between
+        // characters (bulk Keyboard.Type is uninterruptible for long text). No substring allocations;
+        // the per-char overload sends each char through FlaUI's keyboard mapping — this is not a
+        // guaranteed full-Unicode injection path (chars outside the keyboard layout's mapping may be
+        // sent as best-effort key events rather than injected as text).
+        if (text.Length > 0)
         {
-            ctx.ThrowIfCancelled();
-            ctx.Gate.ThrowIfUserActive("the typing", ctx);
-            ctx.Gate.EnsureForeground(window);
-            Keyboard.Type(c);
-            if (delayMs > 0)
+            foreach (var c in text)
             {
-                await Task.Delay(delayMs, ctx.Cancel);
+                ctx.ThrowIfCancelled();
+                ctx.Gate.ThrowIfUserActive("the typing", ctx);
+                ctx.Gate.EnsureForeground(window);
+                Keyboard.Type(c);
+                if (delayMs > 0)
+                {
+                    await Task.Delay(delayMs, ctx.Cancel);
+                }
             }
+
+            // Give the injected keystrokes a moment to be consumed by the target before anything
+            // else happens. The synthetic input sits in the thread/input queue while the next UIA
+            // call (e.g. an Invoke on a button) can be dispatched first and overtake it, so a
+            // subsequent action may observe stale text. This is a best-effort grace period, not a
+            // guaranteed OS queue drain.
+            await Task.Delay(100, ctx.Cancel);
         }
         if (submit)
         {
             ctx.ThrowIfCancelled();
             ctx.Gate.ThrowIfUserActive("the submit key", ctx);
             ctx.Gate.EnsureForeground(window);
-            HeldInput.Press(VirtualKeyShort.RETURN, ctx.Cancel);
             try
             {
+                HeldInput.Press(VirtualKeyShort.RETURN, ctx.Cancel);
                 await Task.Delay(15, ctx.Cancel);
             }
             finally
             {
                 HeldInput.Release(VirtualKeyShort.RETURN);
             }
+            // Same best-effort grace after the Enter release so a following UIA action cannot
+            // overtake the just-submitted input.
+            await Task.Delay(100, ctx.Cancel);
         }
 
         return JsonResult(new
@@ -156,7 +172,8 @@ public sealed class FillTool : ToolBase
     public override string Description =>
         "Sets the value of an input element (ref or mark required). Prefers the UIA Value pattern (works even " +
         "when the window is not foreground, verified by reading the value back), otherwise focuses the element " +
-        "and types with ctrl+a first. Password fields are refused (password_field). Returns method " +
+        "and types with ctrl+a first. Password fields are refused in normal mode (YOLO bypasses the check) " +
+        "(password_field). Returns method " +
         "(value|type) and verified (read-back true/false; null when typed).";
 
     public override object InputSchema => new
@@ -240,9 +257,9 @@ public sealed class FillTool : ToolBase
                 ctx.ThrowIfCancelled();
                 ctx.Gate.ThrowIfUserActive("the clear key", ctx);
                 ctx.Gate.EnsureForeground(window);
-                HeldInput.Press(VirtualKeyShort.DELETE, ctx.Cancel);
                 try
                 {
+                    HeldInput.Press(VirtualKeyShort.DELETE, ctx.Cancel);
                     await Task.Delay(15, ctx.Cancel);
                 }
                 finally
@@ -251,6 +268,12 @@ public sealed class FillTool : ToolBase
                 }
             }
             method = "type";
+
+            // Same best-effort grace as windows_type: injected keystrokes can still be sitting in
+            // the input queue when a subsequent UIA call runs, and that call can overtake them.
+            // Not a guaranteed OS queue drain — just a short window for the target to consume
+            // the input before the typed value is verified/returned.
+            await Task.Delay(100, ctx.Cancel);
         }
 
         return JsonResult(new

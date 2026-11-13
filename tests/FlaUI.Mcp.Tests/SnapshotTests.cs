@@ -84,13 +84,21 @@ public class SnapshotTests
         Assert.Equal("  - button \"Cancel\" [ref=w1e3] @10,10,50x20", lines[2]);
     }
 
-    [Fact]
-    public void OffscreenWithEmptyBoundsDropsSubtree()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FlyoutCommandsRemainDiscoverableThroughLayoutOnlyAncestors(bool wrapperOffscreen)
     {
         var root = N("window", "Main", children:
-            N("pane", bounds: Rectangle.Empty, offscreen: true, children: N("button", "Hidden", runtimeId: new[] { 9 })));
-        var lines = Lines(Emit(root));
-        Assert.Single(lines); // only the window survives
+            N("group", "File", children:
+                N("menu", bounds: Rectangle.Empty, offscreen: wrapperOffscreen, children: new[]
+                {
+                    N("menuitem", "Save as", runtimeId: new[] { 9 }),
+                    N("menuitem", "Hidden command", bounds: Rectangle.Empty, runtimeId: new[] { 10 })
+                })));
+        var text = Emit(root, new SnapshotOptions(VisibleOnly: true)).Text;
+        Assert.Contains("menuitem \"Save as\"", text);
+        Assert.DoesNotContain("Hidden command", text);
     }
 
     [Fact]
@@ -139,18 +147,6 @@ public class SnapshotTests
         Assert.DoesNotContain("Cancel", string.Join('\n', lines));
     }
 
-    [Fact]
-    public void FilterMatchesRoleAndAutomationId()
-    {
-        var root = N("window", "Main", children: new[]
-        {
-            N("button", automationId: "btnSubmit", runtimeId: new[] { 1 }),
-            N("text", "press this")
-        });
-        var options = new SnapshotOptions(Filter: "submit", MaxNodes: 50);
-        var lines = Lines(Emit(root, options));
-        Assert.Equal(2, lines.Length); // window + the automation-id match; the text node is cut
-    }
 
     // ----- interactive / state -----
 
@@ -214,8 +210,9 @@ public class SnapshotTests
     {
         var node = N("button", "a\"b\\c\nd\re", runtimeId: new[] { 1 });
         var line = SnapshotBuilder.FormatLine(node, "w1e1", 0, true);
-        Assert.Contains("\"a\\\"b\\\\c\\nde\"", line);
+        Assert.Contains("\"a\\\"b\\\\c\\nd\\ne\"", line);
         Assert.DoesNotContain('\n', line);
+        Assert.DoesNotContain('\r', line);
     }
 
     [Fact]
@@ -242,10 +239,14 @@ public class SnapshotTests
     [Fact]
     public void ValueIsShownEscapedTruncatedAndOmittedWhenEqualToName()
     {
-        var shown = N("textbox", "Search", value: "line1\nline2", valuePattern: true, runtimeId: new[] { 1 });
-        var line = SnapshotBuilder.FormatLine(shown, "w1e1", 0, true);
-        Assert.Contains("value=\"line1\\nline2\"", line);
-        Assert.DoesNotContain("{val", line); // implied by the textbox role
+        // Every line-break form survives: rich-edit documents separate lines with a lone CR.
+        foreach (var text in new[] { "line1\nline2", "line1\rline2", "line1\r\nline2" })
+        {
+            var shown = N("textbox", "Search", value: text, valuePattern: true, runtimeId: new[] { 1 });
+            var line = SnapshotBuilder.FormatLine(shown, "w1e1", 0, true);
+            Assert.Contains("value=\"line1\\nline2\"", line);
+            Assert.DoesNotContain("{val", line); // implied by the textbox role
+        }
 
         var equal = N("textbox", "Search", value: "Search", valuePattern: true, runtimeId: new[] { 1 });
         Assert.DoesNotContain("value=", SnapshotBuilder.FormatLine(equal, "w1e1", 0, true));

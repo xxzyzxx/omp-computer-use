@@ -21,8 +21,8 @@ public static class HeldInput
         lock (Lock)
         {
             cancel.ThrowIfCancellationRequested();
-            Keyboard.Press(key);
             Keys.Add(key);
+            Keyboard.Press(key);
         }
     }
 
@@ -30,6 +30,7 @@ public static class HeldInput
     {
         lock (Lock)
         {
+            if (!Keys.Contains(key)) return;
             Keyboard.Release(key);
             Keys.Remove(key);
         }
@@ -40,8 +41,8 @@ public static class HeldInput
         lock (Lock)
         {
             cancel.ThrowIfCancellationRequested();
-            Mouse.Down(button);
             Buttons.Add(button);
+            Mouse.Down(button);
         }
     }
 
@@ -49,6 +50,7 @@ public static class HeldInput
     {
         lock (Lock)
         {
+            if (!Buttons.Contains(button)) return;
             Mouse.Up(button);
             Buttons.Remove(button);
         }
@@ -62,17 +64,13 @@ public static class HeldInput
     /// <summary>Releases exactly the tracked keys and buttons, swallowing injection errors.</summary>
     public static void ReleaseAll()
     {
-        VirtualKeyShort[] keys;
-        MouseButton[] buttons;
         lock (Lock)
         {
-            keys = Keys.ToArray();
-            buttons = Buttons.ToArray();
-            foreach (var b in buttons)
+            foreach (var b in Buttons)
             {
                 try { Mouse.Up(b); } catch { /* best effort */ }
             }
-            foreach (var k in keys)
+            foreach (var k in Keys)
             {
                 try { Keyboard.Release(k); } catch { /* best effort */ }
             }

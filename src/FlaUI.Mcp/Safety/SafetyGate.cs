@@ -104,6 +104,48 @@ public sealed class SafetyGate
             $"Call windows_focus window={target.Handle} and retry; if a dialog opened, windows_snapshot it first.");
     }
 
+    /// <summary>
+    /// Pointer safety: synthetic mouse input lands on whatever window is topmost at the point, which for a
+    /// ref/mark target can be another app covering the element's window. Brings the target forward once
+    /// (unless <paramref name="activate"/> is false), then requires the window under the point to be the
+    /// target itself or a window it owns (its popup, menu or dialog).
+    /// </summary>
+    public void EnsurePointerTarget(WindowInfo target, System.Drawing.Point physical, bool activate = true)
+    {
+        if (PointBelongsTo(target.Hwnd, physical, out var hit)) return;
+        if (activate)
+        {
+            WindowActivation.BringToForeground(target);
+            if (PointBelongsTo(target.Hwnd, physical, out hit)) return;
+        }
+        if (hit == IntPtr.Zero)
+        {
+            throw new ToolException("occluded",
+                $"Physical ({physical.X},{physical.Y}) of {target.Handle} ({target.ProcessName}) is not on any window. No mouse input was sent.",
+                "The element is off-screen: scroll it into view or take a fresh windows_snapshot, then retry.");
+        }
+        var title = Native.GetWindowText(hit);
+        var exe = Native.GetProcessExeName(Native.GetWindowProcessId(hit)) ?? "unknown process";
+        throw new ToolException("occluded",
+            $"Physical ({physical.X},{physical.Y}) of {target.Handle} ({target.ProcessName}) is covered by \"{title}\" ({exe}). No mouse input was sent.",
+            $"If the covering window is a popup or dialog you meant to use, windows_snapshot it and act on its refs; otherwise move or close it, or call windows_focus window={target.Handle}, then retry.");
+    }
+
+    private static bool PointBelongsTo(IntPtr target, System.Drawing.Point physical, out IntPtr hit)
+    {
+        var at = Native.WindowFromPoint(new Native.POINT { X = physical.X, Y = physical.Y });
+        hit = at != IntPtr.Zero ? Native.GetAncestor(at, Native.GA_ROOT) : IntPtr.Zero;
+        if (hit == IntPtr.Zero) hit = at;
+        // Walk the owner chain: popups, menus and dialogs are separate top-level windows owned by the target.
+        var current = hit;
+        for (var i = 0; i < 8 && current != IntPtr.Zero; i++)
+        {
+            if (current == target) return true;
+            current = Native.GetWindow(current, Native.GW_OWNER);
+        }
+        return false;
+    }
+
     public void EnsureNotPasswordField(bool isPassword, string targetDescription)
     {
         if (isPassword && Config.IsPasswordGuardActive)

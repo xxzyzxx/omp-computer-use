@@ -20,7 +20,9 @@ public sealed class ListWindowsTool : ToolBase
     public override string Description =>
         "Lists top-level windows front to back: handle (wN), title, process, pid, physical-pixel bounds, " +
         "minimized/focused flags and whether the app is an Electron/Chromium host, plus every monitor " +
-        "(physical bounds, work area, DPI scale). Not access-gated. Call it first to find the window you want.";
+        "(physical bounds, work area, DPI scale). Also lists the taskbar as \"(taskbar)\" and any open " +
+        "classic popup menu as \"(popup menu)\"; snapshot those handles like any window. Not access-gated. " +
+        "Call it first to find the window you want.";
 
     public override object InputSchema => new
     {

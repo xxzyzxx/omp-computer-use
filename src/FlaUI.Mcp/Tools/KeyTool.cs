@@ -80,22 +80,19 @@ public sealed class KeyTool : ToolBase
             ctx.Gate.ThrowIfUserActive("the key sequence", ctx);
             ctx.Gate.EnsureForeground(window);
             var chord = chords[i];
-            foreach (var mod in chord.Modifiers)
-            {
-                HeldInput.Press(mod, ctx.Cancel);
-            }
-            // The main key goes through HeldInput too, so the kill switch can release it; the
-            // finally releases key AND modifiers on success, cancel, abort or injection error.
-            HeldInput.Press(chord.Key, ctx.Cancel);
             try
             {
-                var hold = holdMs > 0 ? holdMs : 15;
-                var waited = 0;
-                while (waited < hold)
+                foreach (var mod in chord.Modifiers)
                 {
-                    var slice = Math.Min(25, hold - waited);
-                    await Task.Delay(slice, ctx.Cancel);
-                    waited += slice;
+                    HeldInput.Press(mod, ctx.Cancel);
+                }
+                HeldInput.Press(chord.Key, ctx.Cancel);
+                var until = Environment.TickCount64 + (holdMs > 0 ? holdMs : 15);
+                while (true)
+                {
+                    var remaining = until - Environment.TickCount64;
+                    if (remaining <= 0) break;
+                    await Task.Delay((int)Math.Min(25, remaining), ctx.Cancel);
                     ctx.Gate.ThrowIfUserActive("the key hold", ctx);
                 }
             }
@@ -112,6 +109,12 @@ public sealed class KeyTool : ToolBase
                 await Task.Delay(30, ctx.Cancel);
             }
         }
+
+        // Best-effort grace after the final chord release: synthetic input can still be queued
+        // when the next UIA action runs, and that action may be dispatched first and overtake it
+        // (e.g. a menu reacting to the previous chord instead of fresh input). This is a short
+        // settling window, not a guaranteed OS queue drain. Inter-chord spacing above is unchanged.
+        await Task.Delay(100, ctx.Cancel);
 
         return JsonResult(new
         {

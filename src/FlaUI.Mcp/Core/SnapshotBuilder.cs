@@ -208,12 +208,16 @@ public static class SnapshotBuilder
         return tokens.Length > 1 && tokens.All(t => name.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>Escapes a name or value for the snapshot line (upstream convention).</summary>
+    /// <summary>
+    /// Escapes a name or value for the snapshot line (upstream convention). Every line-break form becomes
+    /// <c>\n</c>: rich-edit controls (Windows 11 Notepad) separate lines with a lone CR.
+    /// </summary>
     public static string EscapeName(string name) => name
         .Replace("\\", "\\\\")
         .Replace("\"", "\\\"")
+        .Replace("\r\n", "\\n")
         .Replace("\n", "\\n")
-        .Replace("\r", "");
+        .Replace("\r", "\\n");
 
     /// <summary>Formats one snapshot line at the given kept depth.</summary>
     public static string FormatLine(SnapNode n, string refId, int depth, bool includeBounds)
@@ -331,8 +335,6 @@ public static class SnapshotBuilder
     {
         if (depth > options.MaxDepth) return;
 
-        if (options.VisibleOnly && node.Bounds.IsEmpty) return; // dropped with its subtree
-
         var filter = options.Filter;
         var hasMatch = filter != null && HasMatch(node, filter);
         if (filter != null && !hasMatch) return; // nothing of interest in this subtree
@@ -342,9 +344,9 @@ public static class SnapshotBuilder
             || (hasMatch && Matches(node, filter))
             || (KeepByRules(node, named, options) && (filter == null || hasMatch));
 
-        if (emit && !(options.VisibleOnly && node.Offscreen))
+        if (emit && !(options.VisibleOnly && (node.Offscreen || node.Bounds.IsEmpty)))
         {
-            // Offscreen nodes with non-empty bounds are dropped themselves; their children are visited.
+            // Layout-only or offscreen ancestors do not hide visible descendants (e.g. WinUI flyouts).
             candidates.Add((node, depth));
             depth++;
         }

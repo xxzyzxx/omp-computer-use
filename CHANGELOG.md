@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server-side safety layer: per-app `view`/`control` grants with allowlist, blocked apps (credential UI, password managers, banking titles, the harness terminal), kill switch (`Ctrl+Alt+Pause` by default: aborts tools, releases held input, revokes grants, notifies the host), user-input yield, "agent is driving" overlay excluded from captures, risky-pattern confirmation gates, password-field guard, append-only JSONL audit log.
 - Optional YOLO/allow-all mode (`yolo` config, `--yolo`, `WINDOWS_MCP_YOLO`) for non-critical machines; kill switch, focus safety, stale-ref checks, audit log and overlay stay on.
 - `scripts/publish.ps1` (self-contained publish, x64/ARM64) and `scripts/install-omp.ps1` (merges the `windows` entry into `~/.omp/agent/mcp.json`, installs the skill and kill-switch extension, supports `-Yolo`, `-Publish`, `-ExePath`, `-AgentDir`).
-- OMP integration: operating instructions in `initialize` (appended to the system prompt), `skills/windows-computer-use/SKILL.md` with the eight operating rules, and `harness/omp/extensions/windows-computer-use.ts` which aborts the agent turn on the kill-switch notification and registers `/windows-killswitch`.
+- OMP integration: operating instructions in `initialize` (appended to the system prompt), `skills/windows-computer-use/SKILL.md` with the eight operating rules, and `harness/omp/extensions/windows-computer-use.ts` which aborts the agent turn on the real kill-switch notification and queues a stop note.
 - `sandbox/WindowsComputerUse.wsb` + runbook for Windows Sandbox / separate-user isolation (provided, not verified on the dev machine).
 - Design notes in `DESIGN.md`; README rewritten around the new tool set, coordinate model, config reference, safety model and troubleshooting.
 
@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All held keys/buttons participate in kill-switch cleanup. Typing, chord holds and drag movement yield to user activity; JSON-loaded mixed-case allowlists work and their control grants are revoked for the session.
 - Blocked-window redaction also covers screenshot/zoom BitBlt fallbacks; verified with a capture-protected target and an overlapping test window.
 - The acceptance runner honors `-Milestone`, stops before running later milestones on failure, and points at the actual unit-test project.
+- Same-main-model OMP acceptance covers 50 non-GUI file renames, untrusted screen-text rejection/reporting, and native hotkey notification through agent-turn abort without automatic resumption.
+- Native key/text completion includes a cancellable processing grace period; key/drag holds use monotonic deadlines and tracked input releases are race-safe.
+- Snapshot pruning preserves visible commands beneath empty-bounds layout ancestors, including WinUI flyouts. Notepad acceptance opens an owned document and saves through the File menu using native filename input where UIA value-setting is not committed by the common dialog.
+- Audit replay formats real argument properties and retains millisecond timestamps. The optional sandbox template now maps the actual publish directory to its documented sandbox path; runtime isolation remains unverified.
+- Mouse clicks, wheel scrolls and drags on a ref/mark target bring the element's window forward and return `occluded` instead of sending input to a different window covering it. Batches report `ok: false` when a step ends in `user_active` or `needs_user_confirmation`.
+- `windows_list_windows` lists the taskbar and open classic popup menus that no application window owns; snapshots name such menus under `popup_menus`. `windows_click` accepts `count: 0` to hover.
 
 ## [0.2.0] - 2026-07-08
 

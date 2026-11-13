@@ -415,6 +415,20 @@ public sealed class SnapshotTool : ToolBase
                 hint = "take windows_screenshot marks=true and act by mark; relaunching the app with --force-renderer-accessibility usually exposes a full tree"
             };
         }
+        // A classic popup menu that this window does not own (Explorer's "Show more options", tray
+        // menus) is a separate top-level window and never appears in this tree; point at it.
+        var menus = _s.Session.ListTopLevelWindows(includeMinimized: false)
+            .Where(w => w.ClassName == "#32768" && w.Hwnd != window.Hwnd
+                        && Native.GetWindow(w.Hwnd, Native.GW_OWNER) != window.Hwnd)
+            .Select(w => w.Handle).ToList();
+        if (menus.Count > 0)
+        {
+            header["popup_menus"] = new
+            {
+                handles = menus,
+                hint = "an open popup menu is its own window: windows_snapshot window=<handle> to get its items"
+            };
+        }
 
         string text;
         if (HasArgument(arguments, "diff_since"))

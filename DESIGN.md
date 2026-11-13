@@ -17,10 +17,9 @@ and capture-protected surfaces remain limits rather than promised support.
 ## Snapshot: one UIA Subtree cache fetch
 
 Snapshot walks the tree with a `CacheRequest` scoped to the subtree (elements,
-properties, patterns) instead of per-node round-trips. At 300 % DPI and hundreds of
-nodes, per-node property reads dominate wall time; a single cached subtree fetch
-roughly an order-of-magnitude's less UIA traffic. The cost is that the cache is a
-point-in-time view — which is exactly what a snapshot should be.
+properties, patterns) rather than issuing a UIA property round-trip for every field
+of every node. The cache is a point-in-time view, which is exactly what a snapshot
+should be; this does not establish a measured speedup against an uncached baseline.
 
 ## Refs live across generations, keyed by RuntimeId
 
@@ -38,14 +37,19 @@ not "keep only controls". Readable text nodes (static text, document text, list 
 names) stay even in `interactive_only` snapshots, because verifying an action (the
 default loop's diff step) needs the text that changed, not just the buttons.
 
+Visibility pruning suppresses an offscreen or empty-bounds node, not its descendants.
+WinUI flyouts can have layout-only ancestors with no rectangle while their menu
+commands have visible bounds. Dropping the entire ancestor subtree hid Notepad's
+Save-as command despite its presence in the single cached fetch.
+
 ## Image frames + `image_id`: one coordinate language for the model
 
 The model works exclusively in *image pixels* of the most recent image; the server
 converts to physical pixels via the frame's mapping (`Scale`, origin) and rejects
-points outside the frame (`bad_coordinates` → "take a new screenshot"). Physical
-pixels never cross the protocol. This keeps the coordinate rule one sentence long in
-the skill, and it is the same rule for screenshots and zooms; `image_id` disambiguates
-when the model wants to act against an older image.
+points outside the frame (`bad_coordinates` → "take a new screenshot"). Tree/window
+bounds and mapping origins remain physical-pixel metadata; action `x,y` never use
+those tree coordinates directly. The same rule applies to screenshots and zooms;
+`image_id` disambiguates actions against an older image.
 
 ## Marks are drawn after downscale
 
@@ -54,6 +58,40 @@ drawn **after** downscaling, in image pixel space, from the interactive elements
 the last snapshot that intersect the captured region. Drawing before downscale would
 blur or lose 1-px badges at 300 % DPI, and anti-aliased marks make mark→pixel
 round-trips lossy.
+
+## Native input completion and common dialogs
+
+`SendInput` success means queued, not consumed by the app. An immediately following
+UIA Invoke overtook typed text in live Notepad, leaving only its first characters.
+Typing, keyboard-fallback fill and chord completion now include a cancellable
+100 ms processing grace period, matching FlaUI's input-processing heuristic without
+blocking cancellation. It is not an OS queue barrier; callers must still verify.
+Chord/drag holds use monotonic deadlines rather than adding requested sleep slices.
+
+A common Save-as dialog displayed and reported a `ValuePattern`-set filename as
+verified but saved under the old name, including when Save was invoked directly.
+The acceptance flow therefore discovers that field by UIA and uses native Ctrl+A,
+typing and Enter. This is an existing input route, not an app-specific server
+special case or a claim that displayed-value verification proves application state.
+
+## Pointer safety and windows nobody owns
+
+Synthetic mouse input goes to whatever window is topmost at the point. A ref or mark
+names an element in one window, so a real mouse click, wheel scroll or drag endpoint
+first brings that window forward and then requires the window under the point to be
+the target or a window it owns; otherwise the tool returns `occluded` and sends
+nothing. Found live: a right-click by ref on a covered Explorer item landed on the
+Calculator in front of it, an app the access check had never looked at. Pattern
+actions (Invoke, Toggle, …) need no pointer and are unaffected.
+
+UIA nests owned popups under their owner, so most menus and dialogs appear in the
+owner's snapshot. Classic `#32768` menus without that owner (Explorer's "Show more
+options", tray-icon menus) hang off the desktop root instead and were invisible to
+every tool. They and the taskbar are untitled tool windows, so `windows_list_windows`
+now lists exactly those two classes with synthesized titles, and a snapshot names any
+open un-owned menu in its header. Process-name and pid specs still prefer a real
+application window over these always-topmost surfaces. Other tool windows stay
+unlisted: tooltips, IME and helper windows would be noise.
 
 ## Approval surface: native topmost dialogs; `prompts: deny` for headless
 
@@ -97,8 +135,8 @@ A user requirement for fire-and-forget automation on non-critical machines (VMs,
 test boxes): auto-grant `control` to every app including blocked ones, skip
 confirmation gates, the user-input pause and the password guard. Deliberately kept
 narrow: the kill switch, focus safety, stale-ref checks, the audit log and the
-overlay stay on. It changes *who approves*, not the operating rules — the skill
-states that verification and the kill-switch rules still apply.
+overlay stay on. The skill skips normal-mode approval prompts inside the delegated
+non-critical task, but preserves task scope, verification and kill-switch rules.
 
 Normal-mode allowlist keys are normalized once when safety state is created,
 including dictionaries loaded from JSON. A kill downgrades configured control
@@ -152,3 +190,18 @@ where the prelude is its own mechanism, and safety-gated server-side regardless 
 harness settings. Nothing in this repo enables or depends on the prelude; if both are
 enabled they simply expose different tool sets, and the skill's routing rule (route
 first, GUI last) applies to both.
+
+## Acceptance routing deviation
+
+The 50-file OMP routing scenario used the specialized file-edit tool's move
+operation, not a PowerShell rename loop: this harness requires specialized file
+tools for filesystem mutations. All 50 destination contents were checked and no
+Explorer automation was used. This preserves the spec's non-GUI-first principle
+without pretending its literal shell example was executed.
+
+Separate same-main-model OMP runs mounted all 25 tools, ignored and reported an
+on-screen injected instruction, and handled the real native hotkey notification
+by aborting the agent turn and stopping further desktop actions. Automated input
+state tests do not substitute for a human physically moving the mouse; remaining
+environment limits are explicit in the README.
+

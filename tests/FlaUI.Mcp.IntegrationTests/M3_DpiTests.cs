@@ -13,14 +13,15 @@ namespace FlaUI.Mcp.IntegrationTests;
 public class M3_DpiTests : IDisposable
 {
     private readonly TestAppFixture _f;
-    private Process? _calc;
+    // calc.exe is a stub that exits after starting the packaged app: track the app by its window's pid.
+    private uint _calcPid;
 
     public M3_DpiTests(TestAppFixture fixture) => _f = fixture;
 
     [Fact]
     public async Task Calculator_ScreenshotAndClick_MapCorrectly()
     {
-        _calc = Process.Start(new ProcessStartInfo
+        _ = Process.Start(new ProcessStartInfo
         {
             FileName = "calc.exe",
             UseShellExecute = true
@@ -28,6 +29,7 @@ public class M3_DpiTests : IDisposable
 
         var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
+        _calcPid = info!.Pid;
 
         // Record the monitor DPI from windows_status.
         var status = await _f.Call("windows_status", new { });
@@ -106,7 +108,7 @@ public class M3_DpiTests : IDisposable
     [Fact]
     public async Task Calculator_ZoomAndClick_MapCorrectly()
     {
-        _calc = Process.Start(new ProcessStartInfo
+        _ = Process.Start(new ProcessStartInfo
         {
             FileName = "calc.exe",
             UseShellExecute = true
@@ -114,6 +116,7 @@ public class M3_DpiTests : IDisposable
 
         var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
+        _calcPid = info!.Pid;
 
         var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
@@ -167,16 +170,14 @@ public class M3_DpiTests : IDisposable
 
     public void Dispose()
     {
+        if (_calcPid == 0) return;
         try
         {
-            if (_calc is { HasExited: false })
-            {
-                _calc.Kill(entireProcessTree: true);
-            }
+            Process.GetProcessById((int)_calcPid).Kill();
         }
         catch
         {
-            // best effort.
+            // Already gone.
         }
     }
 }

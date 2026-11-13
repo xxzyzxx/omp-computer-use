@@ -104,6 +104,7 @@ public sealed class ScrollTool : ToolBase
         else
         {
             point ??= TargetResolver.PointOfElement(_s, target.Element!);
+            ctx.Gate.EnsurePointerTarget(target.Window, point.Value);
             Mouse.MoveTo(point.Value);
             if (horizontal)
             {

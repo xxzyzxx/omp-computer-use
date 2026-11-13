@@ -102,25 +102,30 @@ public sealed class DragTool : ToolBase
         await ctx.Gate.EnsureControlAsync(toTarget.Window, ctx);
         ctx.ThrowIfCancelled();
 
+        // Both endpoints must be the topmost window at their point; re-check the source without
+        // activation in case bringing the destination forward covered it.
+        ctx.Gate.EnsurePointerTarget(fromTarget.Window, fromPoint);
+        ctx.Gate.EnsurePointerTarget(toTarget.Window, toPoint);
+        ctx.Gate.EnsurePointerTarget(fromTarget.Window, fromPoint, activate: false);
+
         Mouse.MoveTo(fromPoint);
-        foreach (var mod in modifiers)
-        {
-            HeldInput.Press(mod, ctx.Cancel);
-        }
         var down = false;
         try
         {
+            foreach (var mod in modifiers)
+            {
+                HeldInput.Press(mod, ctx.Cancel);
+            }
             HeldInput.MouseDown(button, ctx.Cancel);
             down = true;
-            // Poll user activity at a bounded <=25 ms cadence while the button is held: on user
-            // activity the unwind below releases the button/modifiers and the call returns the
-            // non-error user_active status instead of holding through the user's input.
-            var waited = 0;
-            while (waited < holdMs)
+            // Poll during the hold and release before yielding. Use an elapsed-time deadline
+            // rather than summing requested delays, which accumulate Windows timer drift.
+            var until = Environment.TickCount64 + holdMs;
+            while (true)
             {
-                var slice = Math.Min(25, holdMs - waited);
-                await Task.Delay(slice, ctx.Cancel);
-                waited += slice;
+                var remaining = until - Environment.TickCount64;
+                if (remaining <= 0) break;
+                await Task.Delay((int)Math.Min(25, remaining), ctx.Cancel);
                 ctx.Gate.ThrowIfUserActive("the drag hold", ctx);
             }
             for (var i = 1; i <= steps; i++)

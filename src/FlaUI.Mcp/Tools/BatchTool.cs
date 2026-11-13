@@ -105,6 +105,7 @@ public sealed class BatchTool : ToolBase
         }
 
         var results = new List<object>();
+        var allOk = true;
         int? stoppedAt = null;
         for (var i = 0; i < steps.Count; i++)
         {
@@ -136,13 +137,17 @@ public sealed class BatchTool : ToolBase
 
             var (ok, status, code, summary) = Inspect(result);
             results.Add(new { i, tool, ok, ms = stepSw.ElapsedMilliseconds, status, code, summary });
+            if (!ok)
+            {
+                allOk = false;
+            }
 
             if (code == "aborted" || ctx.Gate.State.IsAborted)
             {
                 throw Abort(ctx, results);
             }
 
-            if ((!ok || status is "user_active" or "needs_user_confirmation") && stopOnError)
+            if (!ok && stopOnError)
             {
                 stoppedAt = i;
                 break;
@@ -183,7 +188,7 @@ public sealed class BatchTool : ToolBase
 
         var payload = new
         {
-            ok = true,
+            ok = allOk,
             steps_run = results.Count,
             stopped_at = stoppedAt,
             results,
@@ -252,6 +257,7 @@ public sealed class BatchTool : ToolBase
         var summary = text == null ? "" : text.Length <= 200 ? text : text[..200];
         string? status = null;
         string? code = null;
+        bool? innerOk = null;
         if (text != null && text.TrimStart().StartsWith('{'))
         {
             try
@@ -260,6 +266,11 @@ public sealed class BatchTool : ToolBase
                 if (doc.RootElement.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String)
                 {
                     status = st.GetString();
+                }
+                if (doc.RootElement.TryGetProperty("ok", out var okEl))
+                {
+                    if (okEl.ValueKind == JsonValueKind.True) innerOk = true;
+                    else if (okEl.ValueKind == JsonValueKind.False) innerOk = false;
                 }
                 if (result.IsError == true && doc.RootElement.TryGetProperty("code", out var cd) && cd.ValueKind == JsonValueKind.String)
                 {
@@ -271,7 +282,14 @@ public sealed class BatchTool : ToolBase
                 // Free-text error result; summary still carries it.
             }
         }
-        return (result.IsError != true, status, code, summary);
+
+        // A control outcome (user_active / needs_user_confirmation) is not an MCP error, but it is
+        // also not a successful step: the tool's own JSON says ok=false. Mirror that here so a
+        // blocked step can never be reported as success.
+        var ok = result.IsError != true
+            && innerOk != false
+            && status is not ("user_active" or "needs_user_confirmation");
+        return (ok, status, code, summary);
     }
 
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, McpProtocol.JsonOptions);
