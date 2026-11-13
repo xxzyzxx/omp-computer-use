@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -8,18 +8,29 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>FlaUI.Mcp</AssemblyName>
     <RootNamespace>FlaUI.Mcp</RootNamespace>
-    <Version>0.1.0</Version>
-    <Authors>Scott Hanselman</Authors>
-    <Description>MCP server for Windows desktop automation using FlaUI and UI Automation</Description>
-    <RepositoryUrl>https://github.com/shanselman/FlaUI-MCP</RepositoryUrl>
+    <Version>0.3.0</Version>
+    <Authors>Scott Hanselman; OMP computer-use fork</Authors>
+    <Description>MCP server for Windows desktop computer use: UIA snapshots with refs, set-of-marks screenshots, batched actions and a server-side safety layer</Description>
+    <RepositoryUrl>https://github.com/xxzyzxx/FlaUI-MCP</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="FlaUI.Core" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
     <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.2" />
     <PackageReference Include="System.Text.Json" Version="10.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="config.example.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
