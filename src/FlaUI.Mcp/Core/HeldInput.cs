@@ -5,7 +5,10 @@ namespace PlaywrightWindows.Mcp.Core;
 
 /// <summary>
 /// Tracks keys and mouse buttons this server is holding down (key chords, drags, hold_ms) so the kill switch
-/// can release them instantly. All injection that holds state must go through <see cref="Press"/>/<see cref="Release"/>.
+/// can release them instantly. All injection that holds state must go through <see cref="Press"/>/<see cref="MouseDown"/>.
+/// The physical down and the tracking entry happen under the same lock, so a kill switch that fires before a
+/// waiting press can never leave the input physically down after cleanup; pass a cancellation token to Press
+/// so a press queued behind the lock is dropped instead of sent.
 /// </summary>
 public static class HeldInput
 {
@@ -13,28 +16,42 @@ public static class HeldInput
     private static readonly HashSet<VirtualKeyShort> Keys = new();
     private static readonly HashSet<MouseButton> Buttons = new();
 
-    public static void Press(VirtualKeyShort key)
+    public static void Press(VirtualKeyShort key, CancellationToken cancel = default)
     {
-        lock (Lock) Keys.Add(key);
-        Keyboard.Press(key);
+        lock (Lock)
+        {
+            cancel.ThrowIfCancellationRequested();
+            Keyboard.Press(key);
+            Keys.Add(key);
+        }
     }
 
     public static void Release(VirtualKeyShort key)
     {
-        Keyboard.Release(key);
-        lock (Lock) Keys.Remove(key);
+        lock (Lock)
+        {
+            Keyboard.Release(key);
+            Keys.Remove(key);
+        }
     }
 
-    public static void MouseDown(MouseButton button)
+    public static void MouseDown(MouseButton button, CancellationToken cancel = default)
     {
-        lock (Lock) Buttons.Add(button);
-        Mouse.Down(button);
+        lock (Lock)
+        {
+            cancel.ThrowIfCancellationRequested();
+            Mouse.Down(button);
+            Buttons.Add(button);
+        }
     }
 
     public static void MouseUp(MouseButton button)
     {
-        Mouse.Up(button);
-        lock (Lock) Buttons.Remove(button);
+        lock (Lock)
+        {
+            Mouse.Up(button);
+            Buttons.Remove(button);
+        }
     }
 
     public static (int keys, int buttons) Snapshot()
@@ -42,7 +59,7 @@ public static class HeldInput
         lock (Lock) return (Keys.Count, Buttons.Count);
     }
 
-    /// <summary>Releases everything we hold plus every modifier (belt and braces), swallowing injection errors.</summary>
+    /// <summary>Releases exactly the tracked keys and buttons, swallowing injection errors.</summary>
     public static void ReleaseAll()
     {
         VirtualKeyShort[] keys;
@@ -51,26 +68,16 @@ public static class HeldInput
         {
             keys = Keys.ToArray();
             buttons = Buttons.ToArray();
+            foreach (var b in buttons)
+            {
+                try { Mouse.Up(b); } catch { /* best effort */ }
+            }
+            foreach (var k in keys)
+            {
+                try { Keyboard.Release(k); } catch { /* best effort */ }
+            }
             Keys.Clear();
             Buttons.Clear();
-        }
-        foreach (var b in buttons)
-        {
-            try { Mouse.Up(b); } catch { /* best effort */ }
-        }
-        foreach (var k in keys)
-        {
-            try { Keyboard.Release(k); } catch { /* best effort */ }
-        }
-        foreach (var k in new[]
-                 {
-                     VirtualKeyShort.LCONTROL, VirtualKeyShort.RCONTROL, VirtualKeyShort.CONTROL,
-                     VirtualKeyShort.LSHIFT, VirtualKeyShort.RSHIFT, VirtualKeyShort.SHIFT,
-                     VirtualKeyShort.LMENU, VirtualKeyShort.RMENU, VirtualKeyShort.ALT,
-                     VirtualKeyShort.LWIN, VirtualKeyShort.RWIN
-                 })
-        {
-            try { Keyboard.Release(k); } catch { /* best effort */ }
         }
     }
 }

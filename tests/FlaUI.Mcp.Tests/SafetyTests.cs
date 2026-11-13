@@ -116,6 +116,22 @@ public class SafetyTests
         Assert.Null(AuditLog.Redact(Json("[1,2]"), Array.Empty<string>()));
     }
 
+    [Fact]
+    public void Redact_KeySequences_AlsoInsideBatches()
+    {
+        var node = AuditLog.Redact(Json("""
+        {
+          "steps": [
+            { "action": "key", "keys": ["s", "e", "c", "r", "e", "t"] },
+            { "tool": "windows_send_keys", "args": { "chord": "S", "window": "w1" } }
+          ]
+        }
+        """), Array.Empty<string>());
+        Assert.Equal("<redacted 6 items>", node!["steps"]![0]!["keys"]!.GetValue<string>());
+        Assert.Equal("<redacted 1 chars>", node["steps"]![1]!["args"]!["chord"]!.GetValue<string>());
+        Assert.Equal("w1", node["steps"]![1]!["args"]!["window"]!.GetValue<string>());
+    }
+
     // ----- AccessPolicy -----
 
     private static WindowInfo Window(string process, string title, uint pid = 100, string className = "Notepad") => new(
@@ -227,6 +243,30 @@ public class SafetyTests
             state.AddGrant("app3", AccessTier.View, true, "test", "test");       // persistent grants count too
             Assert.Equal(AccessTier.View, state.TierFor("APP3"));
             Assert.Equal(AccessTier.None, state.TierFor("unknown"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void JsonAllowlist_HonorsMixedCaseAndRevokesForTheSession()
+    {
+        var (config, dir) = TempConfig();
+        try
+        {
+            var loaded = JsonSerializer.Deserialize<ServerConfig>("""
+            {"allowlist":{"WinFormsTestApp.exe":"control","OTHER":"view"}}
+            """)!;
+            loaded.GrantsPath = config.GrantsPath;
+            var state = new SafetyState(loaded);
+            Assert.Equal(AccessTier.Control, state.TierFor("WINFORMSTESTAPP"));
+            Assert.Equal(AccessTier.View, state.TierFor("other.exe"));
+            Assert.Equal(AccessTier.None, state.TierFor("unlisted"));
+
+            Assert.Equal(1, state.RevokeControlGrants());
+            Assert.Equal(AccessTier.View, state.TierFor("WinFormsTestApp.exe"));
+            Assert.Equal(AccessTier.View, state.Grants.Single(g => g.App == "winformstestapp.exe").Tier);
+            Assert.Equal("control", loaded.Allowlist["WinFormsTestApp.exe"]);
+            Assert.Equal(AccessTier.Control, new SafetyState(loaded).TierFor("winformstestapp"));
         }
         finally { Directory.Delete(dir, true); }
     }

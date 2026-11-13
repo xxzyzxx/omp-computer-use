@@ -71,7 +71,8 @@ public class M5_ExplorerBatchTests : IDisposable
             {
                 action = "drag", from = new { @ref = fileRef },
                 to = new { x = drop.X, y = drop.Y, image_id = frame.Id }
-            }
+            },
+            new { action = "wait", window = targetHandle, element = new { query = "a.txt" }, timeout_ms = 5000 }
         };
         var batch = await _f.Call("windows_batch", new Dictionary<string, object?>
         {
@@ -84,6 +85,7 @@ public class M5_ExplorerBatchTests : IDisposable
         Assert.All(results, result => Assert.True((bool?)result!["ok"] == true, result!.ToJsonString()));
         Assert.Equal(steps.Length, results.Count);
         Assert.Equal(generation, (int)batch.Header["final"]!["diff"]!["since"]!);
+        Assert.Contains("a.txt", batch.Untrusted);
 
         var moved = Path.Combine(destination, "Dest2", "a.txt");
         var sw = System.Diagnostics.Stopwatch.StartNew();

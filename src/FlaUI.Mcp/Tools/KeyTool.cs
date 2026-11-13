@@ -1,13 +1,14 @@
 using System.Text.Json;
-using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using PlaywrightWindows.Mcp.Core;
 
 namespace PlaywrightWindows.Mcp.Tools;
 
 /// <summary>
-/// Sends key chords ("ctrl+s") or a sequence of chords. Modifiers are held through HeldInput so the kill
-/// switch can release them; the target window is foreground-checked right before the keys go out.
+/// Sends key chords ("ctrl+s") or a sequence of chords. The full chord — main key and modifiers — is held
+/// through HeldInput so the kill switch can release everything; the target window is foreground-checked
+/// right before the keys go out, re-checked before every chord; a chord hold yields with the non-error
+/// user_active status (releasing everything) if the user becomes active.
 /// Registered twice: windows_key and (upstream-compatible) windows_send_keys.
 /// </summary>
 public sealed class KeyTool : ToolBase
@@ -30,7 +31,7 @@ public sealed class KeyTool : ToolBase
         "sequence items, 30 ms apart). Modifiers: ctrl, shift, alt, win. Options: hold_ms (hold the full chord " +
         "before release, default 0), ref/mark to focus an element first, window (focus-safety target; default " +
         "foreground). The target window must be in the foreground or the keys are not sent (focus_lost). " +
-        "Returns the chords sent and the window.";
+        "Returns the chord count and target window; key text is redacted from the audit log.";
 
     public override object InputSchema => new
     {
@@ -76,19 +77,31 @@ public sealed class KeyTool : ToolBase
         for (var i = 0; i < chords.Count; i++)
         {
             ctx.ThrowIfCancelled();
+            ctx.Gate.ThrowIfUserActive("the key sequence", ctx);
+            ctx.Gate.EnsureForeground(window);
             var chord = chords[i];
             foreach (var mod in chord.Modifiers)
             {
-                HeldInput.Press(mod);
+                HeldInput.Press(mod, ctx.Cancel);
             }
+            // The main key goes through HeldInput too, so the kill switch can release it; the
+            // finally releases key AND modifiers on success, cancel, abort or injection error.
+            HeldInput.Press(chord.Key, ctx.Cancel);
             try
             {
-                Keyboard.Press(chord.Key);
-                await Task.Delay(holdMs > 0 ? holdMs : 15, ctx.Cancel);
-                Keyboard.Release(chord.Key);
+                var hold = holdMs > 0 ? holdMs : 15;
+                var waited = 0;
+                while (waited < hold)
+                {
+                    var slice = Math.Min(25, hold - waited);
+                    await Task.Delay(slice, ctx.Cancel);
+                    waited += slice;
+                    ctx.Gate.ThrowIfUserActive("the key hold", ctx);
+                }
             }
             finally
             {
+                HeldInput.Release(chord.Key);
                 for (var m = chord.Modifiers.Count - 1; m >= 0; m--)
                 {
                     HeldInput.Release(chord.Modifiers[m]);
@@ -104,7 +117,7 @@ public sealed class KeyTool : ToolBase
         {
             ok = true,
             method = "keys",
-            target = string.Join(", ", chords.Select(c => c.Raw)),
+            target = target?.TargetDescription ?? window.Handle,
             chords = chords.Count,
             hold_ms = holdMs,
             window = window.Handle

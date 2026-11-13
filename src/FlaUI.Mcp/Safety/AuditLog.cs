@@ -10,7 +10,7 @@ namespace PlaywrightWindows.Mcp.Safety;
 /// </summary>
 public sealed class AuditLog : IDisposable
 {
-    private static readonly HashSet<string> AlwaysRedacted = new(StringComparer.OrdinalIgnoreCase) { "text", "value", "content", "clipboard", "password" };
+    private static readonly HashSet<string> AlwaysRedacted = new(StringComparer.OrdinalIgnoreCase) { "text", "value", "content", "clipboard", "password", "keys", "chord", "key" };
     private readonly string? _dir;
     private readonly object _lock = new();
     private readonly string _sessionId = Guid.NewGuid().ToString("N")[..12];
@@ -94,6 +94,10 @@ public sealed class AuditLog : IDisposable
                     if (redacted.Contains(kv.Key) && kv.Value is JsonValue v && v.TryGetValue<string>(out var s))
                     {
                         copy[kv.Key] = $"<redacted {s.Length} chars>";
+                    }
+                    else if (redacted.Contains(kv.Key) && kv.Value is JsonArray secretItems)
+                    {
+                        copy[kv.Key] = $"<redacted {secretItems.Count} items>";
                     }
                     else
                     {

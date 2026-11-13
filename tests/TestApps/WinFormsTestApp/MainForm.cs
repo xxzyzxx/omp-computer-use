@@ -69,6 +69,29 @@ namespace WinFormsTestApp
             layout.Controls.Add(clickButton);
             layout.Controls.Add(counterLabel);
 
+            // Test-only stand-in for a destructive control whose name matches the default risky
+            // pattern "delete permanently"; clicking only bumps a counter, nothing is deleted.
+            var deleteCount = 0;
+            var deleteLabel = new Label
+            {
+                Text = "Delete count: 0",
+                Name = "DeleteCountLabel",
+                AutoSize = true
+            };
+            var deleteButton = new Button
+            {
+                Text = "Delete permanently",
+                Name = "DeletePermanentlyButton",
+                AutoSize = true
+            };
+            deleteButton.Click += (s, e) =>
+            {
+                deleteCount++;
+                deleteLabel.Text = $"Delete count: {deleteCount}";
+            };
+            layout.Controls.Add(deleteButton);
+            layout.Controls.Add(deleteLabel);
+
             // Button that enables/disables based on checkbox
             var enableCheckbox = new CheckBox
             {

@@ -36,6 +36,7 @@ public sealed class ToolContext
     /// <summary>Invokes another registered tool with this same context (used by windows_batch).</summary>
     public Func<string, JsonElement?, Task<McpToolResult>>? CallTool { get; internal set; }
 
+
     public void ThrowIfCancelled()
     {
         if (Gate.State.IsAborted)
@@ -113,9 +114,7 @@ public class ToolRegistry
         {
             _gate.State.ClearAbortIfStale();
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancel, _gate.State.AbortToken);
-            var ctx = new ToolContext { ToolName = name, Cancel = linked.Token, Gate = _gate, Config = _config };
-            ctx.CallTool = (innerName, innerArgs) => ExecuteNestedAsync(innerName, innerArgs, ctx);
-            return await ExecuteWithTimeoutAsync(tool, arguments, ctx, linked.Token);
+            return await ExecuteWithTimeoutAsync(name, tool, arguments, linked.Token);
         }
         finally
         {
@@ -138,27 +137,108 @@ public class ToolRegistry
         return result;
     }
 
-    private async Task<McpToolResult> ExecuteWithTimeoutAsync(ToolBase tool, JsonElement? arguments, ToolContext ctx, CancellationToken cancel)
+    /// <summary>
+    /// Runs one tool under the combined deadline: the tool's own timeout, the caller's cancel token and the
+    /// kill-switch/abort token. All three feed one linked CTS that the worker observes through ctx.Cancel, so a
+    /// timeout or kill cancels the worker before the response is returned — even if the worker is wedged inside
+    /// a blocked UI Automation provider call, it cannot inject input once that call finally unblocks.
+    /// </summary>
+    private async Task<McpToolResult> ExecuteWithTimeoutAsync(string name, ToolBase tool, JsonElement? arguments, CancellationToken cancel)
     {
         var timeout = tool.Timeout ?? _toolTimeout;
-        var toolTask = Task.Run(() => RunAndAuditAsync(tool, arguments, ctx), CancellationToken.None);
-        var timeoutTask = Task.Delay(timeout, CancellationToken.None);
+        var sw = Stopwatch.StartNew();
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancel, timeoutCts.Token);
+        var ctx = new ToolContext { ToolName = name, Cancel = linked.Token, Gate = _gate, Config = _config };
+        ctx.CallTool = (innerName, innerArgs) => ExecuteNestedAsync(innerName, innerArgs, ctx);
 
-        if (await Task.WhenAny(toolTask, timeoutTask) == timeoutTask)
+        var toolTask = Task.Run(() => RunAsync(tool, arguments, ctx), CancellationToken.None);
+        var completed = await Task.WhenAny(toolTask, Task.Delay(Timeout.InfiniteTimeSpan, linked.Token));
+
+        if (completed == toolTask && !linked.IsCancellationRequested)
         {
-            _ = toolTask.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
-            return ToolBase.ErrorResult(
-                $"Tool '{tool.Name}' timed out after {(int)timeout.TotalMilliseconds}ms. " +
-                "A modal dialog or blocked UI Automation provider may still be running in the background.",
-                "Take a windows_screenshot to see what is blocking, dismiss it (windows_key escape or windows_close), then retry.");
+            var completedResult = await toolTask;
+            timeoutCts.Cancel();
+            sw.Stop();
+            Record(tool, arguments, ctx, completedResult, sw.Elapsed);
+            return completedResult;
         }
 
-        return await toolTask;
+        // Deadline hit, client cancelled, or kill switch fired. Cancel the worker first so it cannot act
+        // after a blocked native call unblocks, then return promptly without waiting for its unwind.
+        linked.Cancel();
+        ReleaseHeldInputIfNeeded();
+
+        McpToolResult result;
+        if (_gate.State.IsAborted)
+        {
+            result = ToolBase.FromToolException(new ToolException("aborted", _gate.State.AbortReason ?? "kill switch engaged",
+                "Stop. Tell the user the kill switch was engaged and wait for new instructions."));
+            // A cooperative batch can return its completed-step ledger while it unwinds. Bound this
+            // grace so a blocked provider never prevents the kill response from reaching the host.
+            try
+            {
+                var unwound = await toolTask.WaitAsync(TimeSpan.FromMilliseconds(50));
+                if (unwound.IsError == true)
+                {
+                    var text = unwound.Content.FirstOrDefault(c => c.Type == "text")?.Text;
+                    using var header = JsonDocument.Parse(text ?? "null");
+                    if (header.RootElement.ValueKind == JsonValueKind.Object
+                        && header.RootElement.TryGetProperty("code", out var code)
+                        && code.GetString() == "aborted")
+                    {
+                        result = unwound;
+                    }
+                }
+            }
+            catch (TimeoutException) { }
+            catch (JsonException) { }
+        }
+        else if (cancel.IsCancellationRequested)
+        {
+            result = ToolBase.FromToolException(new ToolException("cancelled", "Cancelled by the client.", "No action is needed."));
+        }
+        else
+        {
+            result = ToolBase.FromToolException(new ToolException("timeout",
+                $"Tool '{tool.Name}' timed out after {(int)timeout.TotalMilliseconds}ms. " +
+                "A modal dialog or blocked UI Automation provider may still be running in the background.",
+                "Take a windows_screenshot to see what is blocking, dismiss it (windows_key escape or windows_close), then retry."));
+        }
+
+        sw.Stop();
+        Record(tool, arguments, ctx, result, sw.Elapsed);
+        _ = toolTask.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+        return result;
+    }
+
+    /// <summary>If the wedged worker was mid key-chord/drag, stop tracking and physically release it now;
+    /// the worker's own unwind path would only run after its blocked provider call returns.</summary>
+    private static void ReleaseHeldInputIfNeeded()
+    {
+        try
+        {
+            var (keys, buttons) = HeldInput.Snapshot();
+            if (keys == 0 && buttons == 0) return;
+            HeldInput.ReleaseAll();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"held input release failed: {ex.Message}");
+        }
     }
 
     private async Task<McpToolResult> RunAndAuditAsync(ToolBase tool, JsonElement? arguments, ToolContext ctx)
     {
         var sw = Stopwatch.StartNew();
+        var result = await RunAsync(tool, arguments, ctx);
+        sw.Stop();
+        Record(tool, arguments, ctx, result, sw.Elapsed);
+        return result;
+    }
+
+    private async Task<McpToolResult> RunAsync(ToolBase tool, JsonElement? arguments, ToolContext ctx)
+    {
         McpToolResult result;
         try
         {
@@ -173,24 +253,27 @@ public class ToolRegistry
             result = _gate.State.IsAborted
                 ? ToolBase.FromToolException(new ToolException("aborted", _gate.State.AbortReason ?? "kill switch engaged",
                     "Stop. Tell the user the kill switch was engaged and wait for new instructions."))
-                : ToolBase.ErrorResult("Cancelled by the client.", "No action is needed.");
+                : ToolBase.FromToolException(new ToolException("cancelled", "Cancelled by the client.", "No action is needed."));
         }
         catch (Exception ex)
         {
             result = ToolBase.ErrorResult($"{ex.GetType().Name}: {ex.Message}",
                 "Call windows_snapshot to refresh refs and retry; if the app is hung use windows_wait or windows_close.");
         }
-        sw.Stop();
+        return result;
+    }
 
+    /// <summary>Each call owner records the response it actually returns, never a late worker outcome.</summary>
+    private void Record(ToolBase tool, JsonElement? arguments, ToolContext ctx, McpToolResult result, TimeSpan elapsed)
+    {
         try
         {
-            _audit?.Record(tool, arguments, ctx, result, sw.Elapsed);
+            _audit?.Record(tool, arguments, ctx, result, elapsed);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"audit log failure: {ex.Message}");
         }
-        return result;
     }
 }
 

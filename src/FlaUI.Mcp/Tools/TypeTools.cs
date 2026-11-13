@@ -72,24 +72,34 @@ public sealed class TypeTool : ToolBase
         ctx.Gate.EnsureForeground(window);
         ctx.ThrowIfCancelled();
 
-        if (delayMs <= 0)
+        // Emit one Unicode character at a time so cancellation and real user activity interrupt
+        // between characters (bulk Keyboard.Type is uninterruptible for long text). No substring
+        // allocations; the per-char overload sends the whole character.
+        foreach (var c in text)
         {
-            Keyboard.Type(text);
-        }
-        else
-        {
-            foreach (var c in text)
+            ctx.ThrowIfCancelled();
+            ctx.Gate.ThrowIfUserActive("the typing", ctx);
+            ctx.Gate.EnsureForeground(window);
+            Keyboard.Type(c);
+            if (delayMs > 0)
             {
-                Keyboard.Type(c);
-                ctx.ThrowIfCancelled();
                 await Task.Delay(delayMs, ctx.Cancel);
             }
         }
         if (submit)
         {
-            Keyboard.Press(VirtualKeyShort.RETURN);
-            await Task.Delay(15, ctx.Cancel);
-            Keyboard.Release(VirtualKeyShort.RETURN);
+            ctx.ThrowIfCancelled();
+            ctx.Gate.ThrowIfUserActive("the submit key", ctx);
+            ctx.Gate.EnsureForeground(window);
+            HeldInput.Press(VirtualKeyShort.RETURN, ctx.Cancel);
+            try
+            {
+                await Task.Delay(15, ctx.Cancel);
+            }
+            finally
+            {
+                HeldInput.Release(VirtualKeyShort.RETURN);
+            }
         }
 
         return JsonResult(new
@@ -216,13 +226,29 @@ public sealed class FillTool : ToolBase
             await Task.Delay(15, ctx.Cancel);
             if (value.Length > 0)
             {
-                Keyboard.Type(value);
+                // Same per-character interruptibility as windows_type (see there).
+                foreach (var c in value)
+                {
+                    ctx.ThrowIfCancelled();
+                    ctx.Gate.ThrowIfUserActive("the fill typing", ctx);
+                    ctx.Gate.EnsureForeground(window);
+                    Keyboard.Type(c);
+                }
             }
             else
             {
-                Keyboard.Press(VirtualKeyShort.DELETE);
-                await Task.Delay(15, ctx.Cancel);
-                Keyboard.Release(VirtualKeyShort.DELETE);
+                ctx.ThrowIfCancelled();
+                ctx.Gate.ThrowIfUserActive("the clear key", ctx);
+                ctx.Gate.EnsureForeground(window);
+                HeldInput.Press(VirtualKeyShort.DELETE, ctx.Cancel);
+                try
+                {
+                    await Task.Delay(15, ctx.Cancel);
+                }
+                finally
+                {
+                    HeldInput.Release(VirtualKeyShort.DELETE);
+                }
             }
             method = "type";
         }

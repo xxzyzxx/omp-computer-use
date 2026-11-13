@@ -33,6 +33,7 @@ public sealed class SafetyState
     private static readonly JsonSerializerOptions GrantFileOptions = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
 
     private readonly ServerConfig _config;
+    private readonly ConcurrentDictionary<string, AccessTier> _configuredGrants = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Grant> _sessionGrants = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Grant> _persistentGrants = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _abortLock = new();
@@ -44,6 +45,13 @@ public sealed class SafetyState
     public SafetyState(ServerConfig config)
     {
         _config = config;
+        foreach (var entry in config.Allowlist)
+        {
+            if (Enum.TryParse<AccessTier>(entry.Value, true, out var tier))
+            {
+                _configuredGrants[NormalizeApp(entry.Key)] = tier;
+            }
+        }
         LoadPersistentGrants();
     }
 
@@ -65,7 +73,7 @@ public sealed class SafetyState
         if (string.IsNullOrEmpty(processName)) return AccessTier.None;
         var key = NormalizeApp(processName);
         var tier = AccessTier.None;
-        if (_config.Allowlist.TryGetValue(key, out var cfgTier) && Enum.TryParse<AccessTier>(cfgTier, true, out var t1)) tier = Max(tier, t1);
+        if (_configuredGrants.TryGetValue(key, out var configured)) tier = Max(tier, configured);
         if (_persistentGrants.TryGetValue(key, out var pg)) tier = Max(tier, pg.Tier);
         if (_sessionGrants.TryGetValue(key, out var sg)) tier = Max(tier, sg.Tier);
         return tier;
@@ -91,6 +99,14 @@ public sealed class SafetyState
     public int RevokeControlGrants()
     {
         var count = 0;
+        foreach (var entry in _configuredGrants)
+        {
+            if (entry.Value == AccessTier.Control
+                && _configuredGrants.TryUpdate(entry.Key, AccessTier.View, AccessTier.Control))
+            {
+                count++;
+            }
+        }
         foreach (var dict in new[] { _sessionGrants, _persistentGrants })
         {
             foreach (var kv in dict)
@@ -122,12 +138,9 @@ public sealed class SafetyState
     {
         get
         {
-            foreach (var kv in _config.Allowlist)
+            foreach (var entry in _configuredGrants)
             {
-                if (Enum.TryParse<AccessTier>(kv.Value, true, out var t))
-                {
-                    yield return new Grant { App = NormalizeApp(kv.Key), Tier = t, Persistent = true, Source = "config.allowlist" };
-                }
+                yield return new Grant { App = entry.Key, Tier = entry.Value, Persistent = true, Source = "config.allowlist" };
             }
             foreach (var g in _persistentGrants.Values) yield return g;
             foreach (var g in _sessionGrants.Values) yield return g;

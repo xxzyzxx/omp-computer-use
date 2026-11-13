@@ -153,18 +153,22 @@ CLI flags and environment variables override the file.
 
 ## Safety model
 
-Everything here is enforced **server-side**, in the process the agent cannot touch:
+These gates are enforced by the MCP server, not just by model instructions. They are
+not an OS security boundary against an agent that also has shell/code execution;
+use an isolated account or machine when that distinction matters.
 
 - **Access grants.** Action tools refuse un-granted apps; `windows_request_access`
   shows a topmost dialog with your reason; a human approves. Grants are per-app and
-  per-tier; `windows_release` drops them.
+  per-tier; `windows_release` drops the active-control lock and overlay, not grants.
 - **Kill switch.** `Ctrl+Alt+Pause` (configurable): aborts running tools and batches,
   releases held mouse/keyboard input, revokes control grants, and notifies the host
   (`notifications/windows/kill_switch`). The bundled OMP extension turns that into
   `ctx.abort()` — the current agent turn stops — plus a user warning and a next-turn
-  note telling the model to stop. In omp you can also run `/windows-killswitch`.
-- **User input wins.** Real mouse/keyboard activity pauses injection until the user
-  has been idle `idleResumeSeconds`; the agent gets `user_active` and must wait.
+  note telling the model to stop. Configured allowlist control is downgraded to view
+  for this server session; the config file itself is not rewritten.
+- **User input wins.** Non-injected mouse/keyboard activity pauses injection until
+  the user has been idle `idleResumeSeconds`. Typing checks between characters;
+  drag and chord holds check at most every 25 ms and release input before yielding.
 - **Overlay.** A topmost "agent is driving" frame while the control lock is held; it
   is excluded from captures.
 - **Untrusted screen text.** All screen-derived text is wrapped in
@@ -174,8 +178,13 @@ Everything here is enforced **server-side**, in the process the agent cannot tou
   permanently, uninstall, …) return `needs_user_confirmation` and only proceed after
   a human confirms the dialog.
 - **Password guard.** UIA password fields are never typed into.
-- **Audit log.** Append-only JSONL of every tool call (arguments redacted for
-  secrets) in `auditDir`; replay calls with `node scripts/mcp-call.mjs <exe> -- '<tool>' '<json>'`.
+- **Audit log.** Append-only JSONL of every tool call in `auditDir`; typed text,
+  clipboard content and key/chord sequences are redacted, including nested batches.
+  Read the timeline with `./scripts/replay-audit.ps1`.
+- **Timeouts.** `timeout`, `cancelled` and `aborted` responses cancel the worker
+  before returning. A blocked native provider may finish later, but subsequent
+  input remains cancellation-guarded. Abort responses preserve a cooperative
+  batch's partial ledger with a bounded unwind window.
 - **Blocked apps.** `consent.exe`, UAC/credential UI, password managers, Windows
   Security, banking/payment title regexes — and, by default, the terminal that
   launched the server (so the agent cannot automate its own harness).
@@ -203,11 +212,16 @@ log, and the overlay (disable the overlay separately with `--no-overlay`).
   back blank.
 - No guarantees over remote-session software (Parsec, RDP with GPU remoting, …);
   untested there.
-- Monitor screenshots **redact blocked-app windows** rather than showing them.
-- `windows_launch` of an app you have not been granted will refuse, like any action.
+- Screen-based captures redact blocked-app windows, including window-capture and
+  zoom paths that fall back from `PrintWindow` to screen pixels.
+- `windows_launch` can start an un-granted application, then return `access_denied`
+  with its window handle. It grants no permission to inspect or control that app.
 - Windows Sandbox / separate-user isolation: scripts are provided under
   [`sandbox/`](sandbox/README.md) but are **not verified** on the development machine.
 - Integration tests need an interactive desktop session; CI runs unit tests only.
+- Physical human-input validation remains manual. Automated tests exercise the
+  user-active state transition; OS-injected mouse/keyboard events are intentionally
+  ignored by the low-level hooks, including inputs from some remote-control tools.
 
 ## Troubleshooting
 

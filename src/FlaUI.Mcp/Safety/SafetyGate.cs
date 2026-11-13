@@ -136,6 +136,24 @@ public sealed class SafetyGate
         }
     }
 
+    /// <summary>
+    /// User-activity check for actions that hold input (drag hold/move, key holds): the caller releases
+    /// its held input in its unwind path; this throws the existing non-error user_active status so the
+    /// agent waits instead of continuing to hold buttons/keys through user activity.
+    /// </summary>
+    public void ThrowIfUserActive(string what, ToolContext ctx)
+    {
+        ctx.ThrowIfCancelled();
+        if (!State.IsUserActive) return;
+        throw new ToolException("user_active",
+            $"The user became active during {what}; held input was released and nothing further was sent.",
+            "Wait a few seconds and retry. Call windows_resume only if the user explicitly told you to continue.")
+        {
+            IsError = false,
+            Payload = new { sinceUserInputMs = State.SinceUserInput?.TotalMilliseconds ?? 0, idleResumeSeconds = Config.IdleResumeSeconds }
+        };
+    }
+
     /// <summary>Confirmation gate for clicks on risky controls (Pay, Delete permanently, …).</summary>
     public async Task ConfirmRiskyAsync(string? elementName, string action, WindowInfo window, ToolContext ctx)
     {

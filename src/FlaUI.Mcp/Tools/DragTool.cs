@@ -27,8 +27,9 @@ public sealed class DragTool : ToolBase
         "ref, mark or x,y (+image_id in the pixels of a recent screenshot/zoom). Options: button left (default " +
         "and only supported button), steps 1..100 (interpolated moves, default 12), hold_ms 0..2000 (pause after " +
         "mouse-down before moving, default 150 — Explorer needs it), modifiers [ctrl,shift,alt,win] (e.g. " +
-        "[\"ctrl\"] to copy). The mouse button is released even when the drag fails or is cancelled. Returns " +
-        "the physical from/to points used.";
+        "[\"ctrl\"] to copy). Both endpoint windows need control access; the drag is refused before any input if " +
+        "either is ungranted or blocked. The mouse button is released even when the drag fails or is cancelled. " +
+        "Returns the physical from/to points used.";
 
     public override object InputSchema => new
     {
@@ -94,21 +95,34 @@ public sealed class DragTool : ToolBase
         var holdMs = ActionArgs.IntInRange(arguments, "hold_ms", 150, 0, 2000, "a mouse-down hold of 0..2000 ms");
         var modifiers = ActionArgs.Modifiers(arguments);
 
-        // Gate on the window that owns the drag start (drop targets in another window are checked by that step's own call).
+        // Gate BOTH endpoint windows before any input: source and destination may live in different
+        // processes, and an ungranted or blocked destination must never receive mouse input.
         await ctx.Gate.EnsureControlAsync(fromTarget.Window, ctx);
+        ctx.ThrowIfCancelled();
+        await ctx.Gate.EnsureControlAsync(toTarget.Window, ctx);
         ctx.ThrowIfCancelled();
 
         Mouse.MoveTo(fromPoint);
         foreach (var mod in modifiers)
         {
-            HeldInput.Press(mod);
+            HeldInput.Press(mod, ctx.Cancel);
         }
         var down = false;
         try
         {
-            HeldInput.MouseDown(button);
+            HeldInput.MouseDown(button, ctx.Cancel);
             down = true;
-            await Task.Delay(holdMs, ctx.Cancel);
+            // Poll user activity at a bounded <=25 ms cadence while the button is held: on user
+            // activity the unwind below releases the button/modifiers and the call returns the
+            // non-error user_active status instead of holding through the user's input.
+            var waited = 0;
+            while (waited < holdMs)
+            {
+                var slice = Math.Min(25, holdMs - waited);
+                await Task.Delay(slice, ctx.Cancel);
+                waited += slice;
+                ctx.Gate.ThrowIfUserActive("the drag hold", ctx);
+            }
             for (var i = 1; i <= steps; i++)
             {
                 var t = (double)i / steps;
@@ -119,6 +133,7 @@ public sealed class DragTool : ToolBase
                 if (i < steps)
                 {
                     await Task.Delay(15, ctx.Cancel);
+                    ctx.Gate.ThrowIfUserActive("the drag move", ctx);
                 }
                 ctx.ThrowIfCancelled();
             }

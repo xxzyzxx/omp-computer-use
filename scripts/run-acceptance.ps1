@@ -13,24 +13,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$srcDir = Join-Path $repoRoot "src\FlaUI.Mcp"
-$unitTests = Join-Path $repoRoot "tests\FlaUI.Mcp.UnitTests"
+$unitTests = Join-Path $repoRoot "tests\FlaUI.Mcp.Tests"
 $integrationTests = Join-Path $repoRoot "tests\FlaUI.Mcp.IntegrationTests"
 
 function Write-Milestone($name, $passed, $output) {
     $tag = if ($passed) { "PASS" } else { "FAIL" }
     Write-Host "[$name] $tag"
-    if (-not $passed) {
-        Write-Host $output
-    }
+    Write-Host ($output -join [Environment]::NewLine)
 }
 
 # 1. Build the solution.
 Write-Host "=== Building solution ==="
-$build = dotnet build $repoRoot 2>&1
+$build = dotnet build (Join-Path $repoRoot "FlaUI.Mcp.sln") --nologo 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "=== Build FAILED ==="
-    Write-Host $build
+    Write-Host ($build -join [Environment]::NewLine)
     exit 1
 }
 Write-Host "=== Build OK ==="
@@ -40,50 +37,28 @@ Write-Host "=== Running unit tests ==="
 $unitOut = dotnet test $unitTests --no-build --nologo 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "=== Unit tests FAILED ==="
-    Write-Host $unitOut
+    Write-Host ($unitOut -join [Environment]::NewLine)
     exit 1
 }
 Write-Host "=== Unit tests OK ==="
+Write-Host ($unitOut -join [Environment]::NewLine)
 
 # 3. Integration tests.
 $integrationTestsCsproj = Join-Path $integrationTests "FlaUI.Mcp.IntegrationTests.csproj"
-$dotnetIntegrationTests = Join-Path $integrationTests "bin"
-dotnet build $integrationTestsCsproj --no-restore 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "=== Integration tests build FAILED ==="
-    exit 1
-}
-
-$integrationResults = @()
-$dotnetTest = Join-Path $env:TEMP "dotnet-test"
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M1_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M1"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M2_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M2"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M3_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M3"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M4_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M4"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M5_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M5"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-$integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~M6_" 2>&1
-$integrationResults += [PSCustomObject]@{ Name = "M6"; Output = $integrationOutput; ExitCode = $LASTEXITCODE }
-
-# Stop at the first failure unless -ContinueOnFailure.
+$milestones = if ($Milestone) { @($Milestone) } else { @("M1", "M2", "M3", "M4", "M5", "M6") }
 $failed = $false
-foreach ($result in $integrationResults) {
-    Write-Milestone $result.Name ($result.ExitCode -eq 0) $result.Output
-    if ($result.ExitCode -ne 0) {
+foreach ($name in $milestones) {
+    $integrationOutput = dotnet test $integrationTestsCsproj --no-build --nologo --filter "FullyQualifiedName~${name}_" 2>&1
+    $code = $LASTEXITCODE
+    Write-Milestone $name ($code -eq 0) $integrationOutput
+    if ($code -ne 0) {
         $failed = $true
         if (-not $ContinueOnFailure) {
             Write-Host "=== Stopping at the first failure ==="
-            break
+            exit 1
         }
     }
 }
-
-# 4. Cleanup.
-Remove-Item -Path $dotnetTest -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($failed) {
     Write-Host "=== Integration tests FAILED ==="

@@ -5,15 +5,14 @@ surface and config keys are documented in the README; this file explains the *wh
 
 ## Capture: PrintWindow, not Windows.Graphics.Capture
 
-Window capture uses `PrintWindow` with `PW_RENDERFULLCONTENT`, falling back to a
-bitblt of the screen region, and only falls back further to monitor capture when the
-window is occluded or blank. Windows.Graphics.Capture (WGC) captures faster and can
-see DirectX-exclusive content, but it requires a WinRT object graph inside a Win32
-service process, pops a permission prompt on some builds, and its frame pool wants a
-pump we would have to feed forever. `PrintWindow` with the full-content flag handles
-the apps we actually target (Win32, WinForms, WPF, Chromium) in-process with no
-prompt. Blank frames from hardware overlays are a known limit, surfaced as
-`window_empty`/blank-detection rather than silently returning a black PNG.
+Window capture first uses `PrintWindow` with `PW_RENDERFULLCONTENT`, which can
+capture an occluded window without focusing it. A failed or nearly black result
+falls back to a BitBlt of that window's visible screen rectangle, reported as
+`bitblt-fallback`. The fallback can include other windows covering the target;
+blocked windows are therefore redacted in both screenshot and zoom paths.
+Windows.Graphics.Capture is not implemented: the current native path covers the
+Win32, WinForms, WPF and Chromium applications exercised here. DirectX-exclusive
+and capture-protected surfaces remain limits rather than promised support.
 
 ## Snapshot: one UIA Subtree cache fetch
 
@@ -73,10 +72,11 @@ MCP notification `notifications/windows/kill_switch` → the OMP extension
 (`harness/omp/extensions/windows-computer-use.ts`) calls `ctx.abort()`, warns the
 user, and queues a next-turn note instructing the model to stop. Enforcing the abort
 *outside* the server matters because a server-side "stop" can only stop tools; the
-harness owns the agent loop, and OMP's default `tools.approvalMode` is `yolo`, so
-without the extension nothing would stop the next turn. The `/windows-killswitch`
-slash command is the manual fallback for when the hotkey is taken or the session is
-remote.
+harness owns the agent loop. A tool deadline cancels the same worker token as a
+client abort or hotkey. A blocked provider cannot be forcibly interrupted, so the
+registry returns without waiting indefinitely; every later input checks cancellation.
+On a kill, a cooperative batch gets at most 50 ms to return its partial ledger.
+The response owner audits the returned outcome, never a late worker completion.
 
 ## `windows_list_windows` is ungated
 
@@ -86,10 +86,10 @@ access request. Gating it would force a grant just to ask for a grant.
 
 ## Monitor captures redact blocked windows
 
-A full-monitor screenshot would otherwise exfiltrate the pixels of a password
-manager or UAC prompt — exactly the apps the blocklist protects. Monitor and
-"all-monitor" captures therefore blank blocked-app windows (same enforcement as
-control, applied to perception).
+A screen capture would otherwise expose pixels of a password manager or UAC prompt.
+Monitor and region captures blank blocked windows. The same rule applies when a
+window capture or zoom uses screen pixels after `PrintWindow` fails; real
+`PrintWindow` captures do not contain occluding windows and need no such redaction.
 
 ## YOLO mode
 
@@ -100,13 +100,18 @@ narrow: the kill switch, focus safety, stale-ref checks, the audit log and the
 overlay stay on. It changes *who approves*, not the operating rules — the skill
 states that verification and the kill-switch rules still apply.
 
+Normal-mode allowlist keys are normalized once when safety state is created,
+including dictionaries loaded from JSON. A kill downgrades configured control
+grants in memory for this session without rewriting the config file; persisted
+human grants are downgraded in the grants file.
+
+
 ## Harness terminal detection
 
-`blockHarnessTerminal` walks the parent-process chain from the server process and
-adds every ancestor exe to the blocklist. The agent's own terminal is the one window
-it can do real damage with (typing into the harness, killing its own supervision), so
-it is blocked by default. Parent-chain detection catches terminals launched under
-different names (VS Code, Windows Terminal, conhost) without enumerating them.
+`blockHarnessTerminal` records the server's parent-process chain and refuses windows
+belonging to those process IDs. The agent's own terminal is blocked by default so
+desktop input cannot control its supervision. This is an app-automation guard, not
+a sandbox against the shell or filesystem tools that the same user already owns.
 
 ## UIA2 per app
 

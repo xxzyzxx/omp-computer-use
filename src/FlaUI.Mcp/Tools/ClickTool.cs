@@ -82,7 +82,7 @@ public sealed class ClickTool : ToolBase
             if (method == null)
             {
                 point = TargetResolver.PointOfElement(_s, target.Element);
-                method = MouseClick(point, button, count, modifiers);
+                method = MouseClick(point, button, count, modifiers, ctx.Cancel);
             }
             else
             {
@@ -92,7 +92,7 @@ public sealed class ClickTool : ToolBase
         else
         {
             point = target.Physical ?? TargetResolver.PointOfElement(_s, target.Element!);
-            method = MouseClick(point, button, count, modifiers);
+            method = MouseClick(point, button, count, modifiers, ctx.Cancel);
         }
 
         return JsonResult(new
@@ -176,12 +176,12 @@ public sealed class ClickTool : ToolBase
         return null;
     }
 
-    private static string MouseClick(Point point, MouseButton button, int count, VirtualKeyShort[] modifiers)
+    private static string MouseClick(Point point, MouseButton button, int count, VirtualKeyShort[] modifiers, CancellationToken cancel)
     {
         Mouse.MoveTo(point);
         foreach (var mod in modifiers)
         {
-            HeldInput.Press(mod);
+            HeldInput.Press(mod, cancel);
         }
         try
         {

@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Window capture switched to `PrintWindow` (PW_RENDERFULLCONTENT) with bitblt fallback; monitor captures redact blocked-app windows.
 - All coordinates inside the server are physical pixels (Per-Monitor-DPI-Aware v2); the model works in image pixels via the `image_id` mapping.
 - Explorer acceptance now creates a folder, renames it, pastes its initial name through the clipboard and drags a file into it in one batch with a final snapshot diff. The drag uses a separate source window so a rename cannot silently reuse a stale destination ref.
+- Safety acceptance now exercises a real held drag and main-key hold in 20-step cancellation flows with a 200 ms bound, default risky-name refusal, both drag endpoints, password refusal and explicit YOLO bypass.
+- Deadlines cancel background workers; abort responses retain cooperative batch progress without waiting indefinitely on a provider. Audit entries describe the response returned to the client, and key/chord sequences are redacted.
+- All held keys/buttons participate in kill-switch cleanup. Typing, chord holds and drag movement yield to user activity; JSON-loaded mixed-case allowlists work and their control grants are revoked for the session.
+- Blocked-window redaction also covers screenshot/zoom BitBlt fallbacks; verified with a capture-protected target and an overlapping test window.
+- The acceptance runner honors `-Milestone`, stops before running later milestones on failure, and points at the actual unit-test project.
 
 ## [0.2.0] - 2026-07-08
 

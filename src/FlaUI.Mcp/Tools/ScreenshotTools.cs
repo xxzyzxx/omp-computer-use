@@ -196,6 +196,11 @@ public sealed class ScreenshotTool : ToolBase
             physical = captured.Physical;
             monitorId = Monitors.ForWindow(window.Hwnd)?.Id ?? 0;
             frameWindow = window.Handle;
+            if (captured.Method == "bitblt-fallback" && !_s.Config.IsBlockedAppsAllowed)
+            {
+                // PrintWindow failed, so the pixels are a screen copy that may show overlapping blocked apps.
+                redacted = ScreenshotTools.RedactBlocked(_s, captured.Bitmap, captured.Physical);
+            }
         }
         else
         {
@@ -466,10 +471,16 @@ public sealed class ZoomTool : ToolBase
                 "Take a fresh windows_screenshot, then zoom into coordinates from its mapping.");
         }
 
+        List<object> redacted = new();
         ScreenCapture.Captured captured;
         if (sourceWindow != null)
         {
             captured = ScreenCapture.Crop(ScreenCapture.Window(sourceWindow), physical);
+            if (captured.Method == "bitblt-fallback" && !_s.Config.IsBlockedAppsAllowed)
+            {
+                // PrintWindow failed, so the pixels are a screen copy that may show overlapping blocked apps.
+                redacted = ScreenshotTools.RedactBlocked(_s, captured.Bitmap, captured.Physical);
+            }
         }
         else
         {
@@ -532,7 +543,8 @@ public sealed class ZoomTool : ToolBase
                 image = zoomFrame.Mapping,
                 source_image_id = frame.Id,
                 region_physical = new { x = captured.Physical.X, y = captured.Physical.Y, width = captured.Physical.Width, height = captured.Physical.Height },
-                marks = map == null ? null : new { count = map.Count, image_id = zoomFrame.Id, map }
+                marks = map == null ? null : new { count = map.Count, image_id = zoomFrame.Id, map },
+                redacted = redacted.Count > 0 ? redacted : null
             }, png);
         }
         finally
