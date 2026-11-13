@@ -75,9 +75,14 @@ Write-Host "  exe:        $ExePath"
 Write-Host "  mcp.json:   $mcpPath (server name: windows)"
 Write-Host "  skill:      $skillDir\SKILL.md"
 Write-Host "  extension:  $extDir\windows-computer-use.ts"
-if ($Yolo) { Write-Host "  mode:       --yolo (allow-all; read the safety section of README.md)" }
+if ($Yolo) {
+    Write-Host "  mode:       --yolo (allow-all; read the safety section of README.md)"
+} else {
+    Write-Host "  mode:       default (access grants + confirmation gates on)"
+}
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  - In omp: /mcp reload (or restart omp), then /mcp list to confirm the 'windows' server connected."
+Write-Host "  - Re-run this script with -Yolo to start the server with --yolo (allow-all), or without it to remove the --yolo argument."
+Write-Host "  - Restart omp after a first install (skill + extension load at startup); /mcp reload suffices for later MCP-only changes. /mcp list confirms the 'windows' server connected."
 Write-Host "  - Tools appear as mcp__windows_snapshot, mcp__windows_click, ... and xd://mcp__windows_* devices."
-Write-Host "  - Kill switch: Ctrl+Alt+Pause on the controlled machine (or /windows-killswitch in omp)."
+Write-Host "  - Kill switch: Ctrl+Alt+Pause on the controlled machine; the extension aborts the run and the server revokes grants."

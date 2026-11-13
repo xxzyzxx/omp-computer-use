@@ -41,10 +41,10 @@ if (-not (Test-Path $Path)) {
     return
 }
 
-function Format-Args([object]$Args) {
-    # Args are already redacted by the server; keep the summary to one short line.
-    if ($null -eq $Args) { return '' }
-    $parts = foreach ($p in $Args.PSObject.Properties) {
+function Format-Args([object]$Arguments) {
+    # Do not name this parameter $Args: PowerShell reserves that automatic variable.
+    if ($null -eq $Arguments) { return '' }
+    $parts = foreach ($p in $Arguments.PSObject.Properties) {
         $v = $p.Value
         if ($v -is [System.Management.Automation.PSCustomObject]) {
             $v = '{...}'
@@ -61,7 +61,10 @@ function Format-Args([object]$Args) {
 }
 
 function Format-Entry([object]$e) {
-    $time = ([datetime]::Parse($e.ts).ToLocalTime()).ToString('HH:mm:ss.fff')
+    $timestamp = if ($e.ts -is [datetime]) { $e.ts } else {
+        [datetime]::Parse($e.ts, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    }
+    $time = $timestamp.ToLocalTime().ToString('HH:mm:ss.fff')
     if ($e.event) {
         $detail = if ($e.details) { ($e.details | ConvertTo-Json -Compress -Depth 3) } else { '' }
         return "{0}  == {1} ==  {2}" -f $time, $e.event.ToUpperInvariant(), $detail

@@ -19,10 +19,10 @@ Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
 Then:
 
 1. Publish the server: `./scripts/publish.ps1` → `publish/win-x64/FlaUI.Mcp.exe`.
-2. Adjust `HostFolder` in `sandbox/WindowsComputerUse.wsb` to your checkout's
-   `publish/win-x64` path, then run the `.wsb`. It maps the folder read-only to
-   `C:\WindowsComputerUse` inside the sandbox, enables networking, and opens
-   PowerShell there on logon.
+2. The `.wsb` maps `C:\tmp\FlaUI-MCP\publish\win-x64` (this checkout's publish
+   output) read-only to `C:\WindowsComputerUse` inside the sandbox, enables
+   networking, and opens PowerShell there on logon. Adjust `HostFolder` if your
+   checkout lives elsewhere, then run the `.wsb`.
 3. Install OMP inside the sandbox and point its `~/.omp/agent/mcp.json` at the
    mapped exe:
 

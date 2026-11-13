@@ -3,7 +3,7 @@
   "mcpServers": {
     "windows": {
       "type": "stdio",
-      "command": "C:\\tmp\\wmcp-e\\publish\\win-x64\\FlaUI.Mcp.exe",
+      "command": "C:\\tmp\\FlaUI-MCP\\publish\\win-x64\\FlaUI.Mcp.exe",
       "args": [],
       "timeout": 200000
     }

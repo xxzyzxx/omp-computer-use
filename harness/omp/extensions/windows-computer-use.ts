@@ -30,16 +30,4 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify(`Windows kill switch engaged: ${reason}; control grants revoked`, "warning");
 		pi.sendUserMessage(nextTurnNote(reason), { deliverAs: "nextTurn" });
 	});
-
-	// Manual fallback if the hotkey cannot be pressed (headless, remote session, hotkey taken).
-	pi.registerCommand("windows-killswitch", {
-		description: "Abort the current agent run as if the Windows computer-use kill switch fired",
-		handler: async (_args, ctx) => {
-			ctx.abort();
-			ctx.ui.notify("Windows kill switch engaged (manual); control grants revoked", "warning");
-			pi.sendUserMessage(nextTurnNote("manual /windows-killswitch command"), {
-				deliverAs: "nextTurn",
-			});
-		},
-	});
 }

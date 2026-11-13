@@ -2,7 +2,8 @@
   <!-- Map the published server read-only into the sandbox. Adjust HostFolder to your checkout. -->
   <MappedFolders>
     <MappedFolder>
-      <HostFolder>C:\tmp\wmcp-e\publish\win-x64</HostFolder>
+      <HostFolder>C:\tmp\FlaUI-MCP\publish\win-x64</HostFolder>
+      <SandboxFolder>C:\WindowsComputerUse</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
   </MappedFolders>
