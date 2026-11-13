@@ -272,4 +272,8 @@ internal static class Native
             CloseHandle(h);
         }
     }
+
+    /// <summary>Maps a character to the virtual-key code that types it; high byte holds the shift/ctrl/alt state (0xFFFF = none).</summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern short VkKeyScanW(char ch);
 }
