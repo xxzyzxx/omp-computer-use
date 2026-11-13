@@ -273,13 +273,18 @@ public class SessionManager : IDisposable
 
     // ----- launching -----
 
+    public sealed record LaunchResult(WindowInfo Window, bool NewWindow);
+
     /// <summary>
-    /// Launches an application by path, name (resolved through the shell) or AUMID (contains '!'), then waits
-    /// for a new top-level window owned by the process or appearing after launch.
+    /// Launches an application by path, name (resolved through the shell), protocol (<c>ms-settings:</c>) or AUMID
+    /// (contains '!'), then waits for a new top-level window owned by the process or appearing after launch.
+    /// Single-instance apps and protocol handlers that only activate an existing window return that window with
+    /// <see cref="LaunchResult.NewWindow"/> false.
     /// </summary>
-    public WindowInfo LaunchApp(string app, string[]? args = null, int timeoutMs = 15000)
+    public LaunchResult LaunchApp(string app, string[]? args = null, int timeoutMs = 15000)
     {
         var before = ListTopLevelWindows().Select(w => w.Hwnd).ToHashSet();
+        var foregroundBefore = Native.GetForegroundWindow();
         var isAumid = app.Contains('!') && !File.Exists(app);
         var psi = isAumid
             ? new ProcessStartInfo { FileName = "explorer.exe", Arguments = "shell:AppsFolder\\" + app, UseShellExecute = true }
@@ -317,7 +322,7 @@ public class SessionManager : IDisposable
         {
             var windows = ListTopLevelWindows(includeMinimized: false);
             var byPid = launchedPid != 0 ? windows.FirstOrDefault(w => w.Pid == launchedPid) : null;
-            if (byPid != null) return byPid;
+            if (byPid != null) return new LaunchResult(byPid, true);
 
             var fresh = windows.Where(w => !before.Contains(w.Hwnd)).ToList();
             if (fresh.Count > 0)
@@ -325,8 +330,24 @@ public class SessionManager : IDisposable
                 var named = fresh.FirstOrDefault(w =>
                     (w.ProcessName != null && w.ProcessName.Contains(appName, StringComparison.OrdinalIgnoreCase)) ||
                     w.Title.Contains(appName, StringComparison.OrdinalIgnoreCase));
-                if (named != null) return named;
-                if (sw.ElapsedMilliseconds > 1500) return fresh[0];
+                if (named != null) return new LaunchResult(named, true);
+                if (sw.ElapsedMilliseconds > 1500) return new LaunchResult(fresh[0], true);
+            }
+
+            // Single-instance apps and protocol launches (ms-settings:, mailto:) activate an existing window
+            // instead of creating one: after a grace period the foreground window of another process is the result.
+            if (sw.ElapsedMilliseconds > 1500)
+            {
+                var fg = Native.GetForegroundWindow();
+                var isProtocol = !isAumid && app.IndexOf(':') > 1 && !File.Exists(app) && !app.Contains('\\') && !app.Contains('/');
+                if (fg != IntPtr.Zero && (fg != foregroundBefore || isProtocol))
+                {
+                    var activated = TryGetWindowInfo(fg);
+                    if (activated != null && !activated.Minimized && activated.Pid != (uint)Environment.ProcessId)
+                    {
+                        return new LaunchResult(activated, false);
+                    }
+                }
             }
             Thread.Sleep(150);
         }

@@ -58,7 +58,10 @@ internal static class TreeFetch
             lib.PatternAvailability.IsSelectionItemPatternAvailable, lib.PatternAvailability.IsExpandCollapsePatternAvailable,
             lib.PatternAvailability.IsValuePatternAvailable, lib.PatternAvailability.IsRangeValuePatternAvailable,
             lib.PatternAvailability.IsScrollPatternAvailable, lib.PatternAvailability.IsTextPatternAvailable,
-            lib.PatternAvailability.IsSelectionPatternAvailable
+            lib.PatternAvailability.IsSelectionPatternAvailable,
+            // Pattern property values: without these a cached pattern throws on ToggleState/Value/… reads.
+            lib.Toggle.ToggleState, lib.Value.Value, lib.Value.IsReadOnly, lib.SelectionItem.IsSelected,
+            lib.ExpandCollapse.ExpandCollapseState, lib.RangeValue.Value, lib.RangeValue.Minimum, lib.RangeValue.Maximum
         })
         {
             request.Add(p);

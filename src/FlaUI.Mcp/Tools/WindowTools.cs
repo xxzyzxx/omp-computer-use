@@ -49,7 +49,8 @@ public sealed class LaunchTool : ToolBase
         var timeoutMs = ActionArgs.IntInRange(arguments, "timeout_ms", 15000, 1000, 60000, "a launch wait of 1000..60000 ms");
 
         ctx.ThrowIfCancelled();
-        var window = await Task.Run(() => _s.Session.LaunchApp(app, args, timeoutMs), ctx.Cancel);
+        var launched = await Task.Run(() => _s.Session.LaunchApp(app, args, timeoutMs), ctx.Cancel);
+        var window = launched.Window;
         ctx.ThrowIfCancelled();
 
         try
@@ -63,7 +64,13 @@ public sealed class LaunchTool : ToolBase
                 ex.Next);
         }
 
-        return JsonResult(new { ok = true, window = window.ToJson() });
+        return JsonResult(new
+        {
+            ok = true,
+            window = window.ToJson(),
+            new_window = launched.NewWindow,
+            note = launched.NewWindow ? null : "no new window appeared; the app activated an existing window (single-instance app or protocol handler)"
+        });
     }
 }
 

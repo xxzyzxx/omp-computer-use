@@ -18,6 +18,12 @@ public static class ScreenshotTools
     /// captured physical rect and are at least 6x6 px in the final image, snapshot order preserved. When more
     /// than <paramref name="maxMarks"/> remain, the largest elements are kept (still in snapshot order).
     /// </summary>
+    /// <summary>Roles that are containers or scroll hosts: they can be interactive (scroll) but are useless click targets.</summary>
+    private static readonly HashSet<string> ContainerRoles = new(StringComparer.Ordinal)
+    {
+        "window", "pane", "group", "list", "tree", "table", "grid", "tablist", "toolbar", "menubar", "document", "custom", "header"
+    };
+
     public static List<ElementMeta> SelectMarkCandidates(
         IReadOnlyList<ElementMeta> snapshot, Rectangle capturePhysical, double imageScale, int maxMarks)
     {
@@ -25,7 +31,7 @@ public static class ScreenshotTools
         for (var i = 0; i < snapshot.Count; i++)
         {
             var meta = snapshot[i];
-            if (!meta.Interactive) continue;
+            if (!meta.Interactive || ContainerRoles.Contains(meta.Role)) continue;
             var b = meta.Bounds;
             if (b.Width <= 0 || b.Height <= 0 || !b.IntersectsWith(capturePhysical)) continue;
             if (b.Width * imageScale < 6 || b.Height * imageScale < 6) continue;
