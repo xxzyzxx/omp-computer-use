@@ -210,15 +210,27 @@ public sealed class BatchTool : ToolBase
         }
     }
 
-    /// <summary>Runs a final-return call, keeps its non-header blocks, returns its header text.</summary>
-    private async Task<string> CallReturnAsync(ToolContext ctx, List<McpContent> extra, string tool, JsonElement args)
+    /// <summary>Runs a final-return call, keeps its non-header blocks, returns its header (parsed when it is JSON).</summary>
+    private async Task<object?> CallReturnAsync(ToolContext ctx, List<McpContent> extra, string tool, JsonElement args)
     {
         var result = await ctx.CallTool!(tool, args);
         for (var i = 1; i < result.Content.Count; i++)
         {
             extra.Add(result.Content[i]);
         }
-        return result.Content.FirstOrDefault(c => c.Type == "text")?.Text ?? "";
+        var text = result.Content.FirstOrDefault(c => c.Type == "text")?.Text ?? "";
+        if (text.TrimStart().StartsWith('{'))
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<JsonElement>(text);
+            }
+            catch (JsonException)
+            {
+                // Free-text result; return it verbatim.
+            }
+        }
+        return text;
     }
 
     private static ToolException Abort(ToolContext ctx, IReadOnlyList<object> results)

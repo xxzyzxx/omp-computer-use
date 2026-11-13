@@ -29,7 +29,7 @@ public class M6_SafetyTests : IDisposable
             UseShellExecute = true
         }) ?? throw new Exception("Could not launch calc.exe");
 
-        var info = await _f.WaitForWindowAsync("Calculator");
+        var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
 
         var snap = await _f.Call("windows_snapshot", new { window = info!.Handle }, safety: true);

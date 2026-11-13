@@ -268,6 +268,7 @@ public sealed class SnapshotTool : ToolBase
 
     /// <summary>Last emitted lines per window, keyed by RuntimeKey (fallback ref), for diff_since.</summary>
     private readonly Dictionary<string, Dictionary<string, PrevNode>> _lastLines = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _lastGens = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _windowOrder = new();
     private readonly object _storeLock = new();
 
@@ -322,12 +323,17 @@ public sealed class SnapshotTool : ToolBase
         }
 
         var sw = Stopwatch.StartNew();
+        var filter = GetStringArgument(arguments, "filter");
+        // Filtered snapshots are views: they never become the diff/marks baseline.
+        var isBaseline = string.IsNullOrWhiteSpace(filter);
         IReadOnlyList<ElementMeta> previous;
         Dictionary<string, PrevNode>? previousLines;
+        int previousGen;
         lock (_storeLock)
         {
             previous = _s.Elements.LastSnapshot(window.Handle);
             previousLines = _lastLines.TryGetValue(window.Handle, out var d) ? d : null;
+            previousGen = _lastGens.TryGetValue(window.Handle, out var g) ? g : 0;
         }
 
         var gen = _s.Elements.BeginGeneration(window.Handle);
@@ -340,7 +346,7 @@ public sealed class SnapshotTool : ToolBase
                 InteractiveOnly: GetBoolArgument(arguments, "interactive_only", true),
                 VisibleOnly: GetBoolArgument(arguments, "visible_only", true),
                 MaxDepth: Math.Clamp(GetIntArgument(arguments, "max_depth", 14), 1, 64),
-                Filter: GetStringArgument(arguments, "filter"),
+                Filter: filter,
                 MaxNodes: Math.Max(1, GetIntArgument(arguments, "max_nodes", _s.Config.SnapshotMaxNodes)),
                 MaxChars: Math.Max(1000, _s.Config.SnapshotMaxChars),
                 IncludeBounds: GetBoolArgument(arguments, "include_bounds", true)),
@@ -354,24 +360,29 @@ public sealed class SnapshotTool : ToolBase
             metas.Add(meta);
             if (meta.Interactive) interactiveCount++;
         }
-        _s.Elements.CompleteGeneration(window.Handle, gen, metas);
+        if (isBaseline)
+        {
+            _s.Elements.CompleteGeneration(window.Handle, gen, metas);
 
-        // Current lines for the next diff, keyed by RuntimeKey (fallback ref).
-        var currentLines = new Dictionary<string, PrevNode>(output.Nodes.Count);
-        foreach (var e in output.Nodes)
-        {
-            var key = SnapshotBuilder.NodeKey(e.Node, e.Ref);
-            currentLines[key] = new PrevNode(key, e.Line);
-        }
-        lock (_storeLock)
-        {
-            _lastLines[window.Handle] = currentLines;
-            if (!_windowOrder.Contains(window.Handle)) _windowOrder.Add(window.Handle);
-            while (_windowOrder.Count > 64)
+            // Current lines for the next diff, keyed by RuntimeKey (fallback ref).
+            var currentLines = new Dictionary<string, PrevNode>(output.Nodes.Count);
+            foreach (var e in output.Nodes)
             {
-                var oldest = _windowOrder[0];
-                _windowOrder.RemoveAt(0);
-                _lastLines.Remove(oldest);
+                var key = SnapshotBuilder.NodeKey(e.Node, e.Ref);
+                currentLines[key] = new PrevNode(key, e.Line);
+            }
+            lock (_storeLock)
+            {
+                _lastLines[window.Handle] = currentLines;
+                _lastGens[window.Handle] = gen;
+                if (!_windowOrder.Contains(window.Handle)) _windowOrder.Add(window.Handle);
+                while (_windowOrder.Count > 64)
+                {
+                    var oldest = _windowOrder[0];
+                    _windowOrder.RemoveAt(0);
+                    _lastLines.Remove(oldest);
+                    _lastGens.Remove(oldest);
+                }
             }
         }
 
@@ -412,7 +423,12 @@ public sealed class SnapshotTool : ToolBase
                         ? p : PrevFromMeta(m)).ToList();
                 var diff = SnapshotBuilder.Diff(previousNodes, output.Nodes, allowRemoved: !output.Truncated);
                 text = diff.Lines.Count > 0 ? string.Join('\n', diff.Lines) : "(no changes since that snapshot)";
-                header["diff"] = new { since = GetIntArgument(arguments, "diff_since", 0), added = diff.Added, changed = diff.Changed, removed = diff.Removed };
+                var requested = GetIntArgument(arguments, "diff_since", 0);
+                header["diff"] = new { since = previousGen, added = diff.Added, changed = diff.Changed, removed = diff.Removed };
+                if (requested != previousGen)
+                {
+                    header["note"] = $"diffed against the latest unfiltered snapshot (generation {previousGen}), not {requested}";
+                }
             }
             else
             {
@@ -424,6 +440,10 @@ public sealed class SnapshotTool : ToolBase
         else
         {
             text = output.Text;
+        }
+        if (!isBaseline)
+        {
+            header["filtered"] = true;
         }
         if (output.Nodes.Count == 0 && !output.Truncated)
         {

@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool execution now times out after 30 seconds instead of hanging indefinitely when UI Automation blocks.
 
 ### Added
-- Solution file (`FlaUI.Mcp.slnx`)
+- Solution file (`FlaUI.Mcp.sln`; the `.slnx` format needs a newer SDK than the 9.0.1xx line)
 - xUnit test project (`tests/FlaUI.Mcp.Tests`) with DPI regression test
 - `windows_send_keys` MCP tool for sending key presses and key chords.
 - Opt-in `background` mode for `windows_screenshot` handle captures, with blank-frame fallback to the normal capture path.

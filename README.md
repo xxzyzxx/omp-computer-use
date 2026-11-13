@@ -225,7 +225,7 @@ log, and the overlay (disable the overlay separately with `--no-overlay`).
 ## Building from source
 
 ```powershell
-dotnet build FlaUI.Mcp.slnx
+dotnet build FlaUI.Mcp.sln
 dotnet test tests/FlaUI.Mcp.Tests          # unit tests
 dotnet test tests/FlaUI.Mcp.IntegrationTests  # needs an interactive desktop session
 ```

@@ -26,7 +26,7 @@ public class M3_DpiTests : IDisposable
             UseShellExecute = true
         }) ?? throw new Exception("Could not launch calc.exe");
 
-        var info = await _f.WaitForWindowAsync("Calculator");
+        var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
 
         // Record the monitor DPI from windows_status.
@@ -112,7 +112,7 @@ public class M3_DpiTests : IDisposable
             UseShellExecute = true
         }) ?? throw new Exception("Could not launch calc.exe");
 
-        var info = await _f.WaitForWindowAsync("Calculator");
+        var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
 
         var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });

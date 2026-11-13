@@ -18,15 +18,13 @@ public class M1_CalculatorTests : IDisposable
     [Fact]
     public async Task Calculator_Multiply_Three_By_Three_Equals_Nine()
     {
-        _calc = LaunchCalc();
-
         var launch = await _f.Call("windows_launch", new { app = "calc.exe" });
         Assert.False(launch.IsError, $"windows_launch failed: {launch.RawText}");
+        var handle = launch.Header!["window"]!["handle"]!.GetValue<string>();
+        var info = _f.FunctionalSession.ResolveWindow(handle);
+        Assert.True(await _f.WaitForElementAsync(handle, "Seven"), "Calculator content did not load");
 
-        var info = await _f.WaitForWindowAsync("Calculator");
-        Assert.NotNull(info);
-
-        var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
+        var snap = await _f.Call("windows_snapshot", new { window = handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
 
         var three = TestAppFixture.FindRef(snap.Untrusted, "Three", "button");
@@ -68,19 +66,24 @@ public class M1_CalculatorTests : IDisposable
     public async Task Calculator_StaleRef_AfterCloseAndRelaunch_ReturnsStaleRef()
     {
         _calc = LaunchCalc();
-        var info = await _f.WaitForWindowAsync("Calculator");
+        var info = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info);
+        Assert.True(await _f.WaitForElementAsync(info!.Handle, "Seven"), "Calculator content did not load");
 
-        var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
+        var snap = await _f.Call("windows_snapshot", new { window = info.Handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
         var anyRef = TestAppFixture.FindRef(snap.Untrusted, "Seven", "button");
         Assert.NotNull(anyRef);
 
-        KillCalc();
+        // calc.exe is a stub that exits after starting the packaged app: end the app by the window's pid.
+        try { Process.GetProcessById((int)info.Pid).Kill(); } catch { /* already gone */ }
+        var gone = await _f.WaitForWindowGoneAsync(info.Hwnd);
+        Assert.True(gone, "Calculator window did not close");
+
         _calc = LaunchCalc();
-        var info2 = await _f.WaitForWindowAsync("Calculator");
+        var info2 = await _f.WaitForWindowAsync("Calculator", processName: "CalculatorApp.exe");
         Assert.NotNull(info2);
-        Assert.NotEqual(info!.Handle, info2!.Handle);
+        Assert.NotEqual(info.Hwnd, info2!.Hwnd);
 
         var click = await _f.Call("windows_click", new Dictionary<string, object?> { ["ref"] = anyRef });
         Assert.True(click.IsError, $"Expected stale_ref error, got: {click.RawText}");
@@ -99,16 +102,9 @@ public class M1_CalculatorTests : IDisposable
 
     private void KillCalc()
     {
-        try
+        foreach (var p in Process.GetProcessesByName("CalculatorApp"))
         {
-            if (_calc is { HasExited: false })
-            {
-                _calc.Kill(entireProcessTree: true);
-            }
-        }
-        catch
-        {
-            // best effort.
+            try { p.Kill(); } catch { /* best effort */ }
         }
     }
 

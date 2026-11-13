@@ -95,39 +95,36 @@ public class TestAppFixture : IAsyncLifetime
 
         Ui = new UiThread();
 
+        // One window/element/frame state shared by both graphs so handles and refs mean the same thing
+        // whichever registry a test calls; only config, gate and tool registry differ.
+        var shared = new SessionManager(FunctionalConfig);
+        var elements = new ElementRegistry();
+        var frames = new FrameStore();
         (FunctionalSession, FunctionalRegistry, FunctionalServices, FunctionalGate, FunctionalState, FunctionalAudit) =
-            BuildGraph(FunctionalConfig);
+            BuildGraph(FunctionalConfig, shared, elements, frames);
         (SafetySession, SafetyRegistry, SafetyServices, SafetyGateInstance, SafetyState, SafetyAudit) =
-            BuildGraph(SafetyConfig);
+            BuildGraph(SafetyConfig, shared, elements, frames);
 
         _winFormsProcess = LaunchTestApp(winFormsPath);
         _wpfProcess = LaunchTestApp(wpfPath);
         var winFormsProcessId = _winFormsProcess.Id;
         var wpfProcessId = _wpfProcess.Id;
 
-        // Poll for both windows to appear.
+        // Poll for both windows to appear (Win32 enumeration: windows closing mid-poll cannot throw here).
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < WindowPollTimeoutMs
                && (WinFormsHandle == "" || WpfHandle == ""))
         {
             await Task.Delay(WindowPollIntervalMs);
-            var desktop = SafetySession.Automation.GetDesktop();
-            var windows = desktop.FindAllChildren(cf => cf.ByControlType(ControlType.Window));
-            foreach (var w in windows)
+            foreach (var w in SafetySession.ListTopLevelWindows())
             {
-                var win = w.AsWindow();
-                var processId = w.Properties.ProcessId.ValueOrDefault;
-                if (win?.Title == "FlaUI-MCP Test App"
-                    && processId == winFormsProcessId
-                    && WinFormsHandle == "")
+                if (w.Title == "FlaUI-MCP Test App" && w.Pid == winFormsProcessId && WinFormsHandle == "")
                 {
-                    WinFormsHandle = SafetySession.RegisterWindow(win);
+                    WinFormsHandle = w.Handle;
                 }
-                else if (win?.Title == "FlaUI-MCP WPF Test App"
-                         && processId == wpfProcessId
-                         && WpfHandle == "")
+                else if (w.Title == "FlaUI-MCP WPF Test App" && w.Pid == wpfProcessId && WpfHandle == "")
                 {
-                    WpfHandle = SafetySession.RegisterWindow(win);
+                    WpfHandle = w.Handle;
                 }
             }
         }
@@ -144,8 +141,7 @@ public class TestAppFixture : IAsyncLifetime
         CloseProcess(_wpfProcess);
         try
         {
-            SafetySession.Dispose();
-            FunctionalSession.Dispose();
+            FunctionalSession.Dispose(); // shared with the safety graph
         }
         catch
         {
@@ -177,17 +173,17 @@ public class TestAppFixture : IAsyncLifetime
     /// Mirrors Program.cs's object graph: config, audit, ui thread, safety gate, session manager,
     /// services, tool registry and the five Register calls. Test-controlled config per fixture use.
     /// </summary>
-    private (SessionManager, ToolRegistry, Services, SafetyGate, SafetyState, AuditLog) BuildGraph(ServerConfig config)
+    private (SessionManager, ToolRegistry, Services, SafetyGate, SafetyState, AuditLog) BuildGraph(
+        ServerConfig config, SessionManager session, ElementRegistry elements, FrameStore frames)
     {
         var audit = new AuditLog(config.AuditDir);
         var state = new SafetyState(config);
         var policy = new AccessPolicy(config);
         IUserPrompter prompter = config.Prompts == "dialog" ? new DialogPrompter(Ui, config) : new DenyPrompter();
-        using IOverlay overlay = config.Overlay ? new ControlOverlay(Ui, config) : new NullOverlay();
+        IOverlay overlay = config.Overlay ? new ControlOverlay(Ui, config) : new NullOverlay();
         ScreenCapture.CaptureScope = overlay.HideScope;
         var gate = new SafetyGate(state, policy, prompter, overlay, config);
-        var session = new SessionManager(config);
-        var services = new Services(config, session, new ElementRegistry(), new FrameStore(), gate, Ui, audit);
+        var services = new Services(config, session, elements, frames, gate, Ui, audit);
         var tools = new ToolRegistry(gate, config, audit);
         tools.RegisterTool(new StatusTool(services));
         SnapshotTools.Register(tools, services);
@@ -268,11 +264,8 @@ public class TestAppFixture : IAsyncLifetime
                 }
             }
         }
-        if (header == null && untrusted == null && png == null)
-        {
-            var first = result.Content.FirstOrDefault(c => c.Type == "text" && c.Text is { } t)?.Text;
-            raw = first ?? result.Content.FirstOrDefault(c => c.Type == "image")?.Data;
-        }
+        var firstText = result.Content.FirstOrDefault(c => c.Type == "text" && c.Text is { })?.Text;
+        raw = firstText ?? result.Content.FirstOrDefault(c => c.Type == "image")?.Data;
         return new ToolCallResult(header, untrusted, result.IsError == true, png, raw);
     }
 
@@ -377,17 +370,42 @@ public class TestAppFixture : IAsyncLifetime
     /// <summary>
     /// Poll for a window whose title contains the substring, up to 20 s.
     /// </summary>
-    public async Task<WindowInfo?> WaitForWindowAsync(string titleSubstring, int timeoutMs = 20000)
+    public async Task<WindowInfo?> WaitForWindowAsync(string titleSubstring, int timeoutMs = 20000, string? processName = null)
     {
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < timeoutMs)
         {
             var info = SafetySession.ListTopLevelWindows().FirstOrDefault(
-                w => w.Title != null && w.Title.Contains(titleSubstring, StringComparison.OrdinalIgnoreCase));
+                w => w.Title != null && w.Title.Contains(titleSubstring, StringComparison.OrdinalIgnoreCase)
+                     && (processName == null || string.Equals(w.ProcessName, processName, StringComparison.OrdinalIgnoreCase)));
             if (info != null) return info;
             await Task.Delay(250);
         }
         return null;
+    }
+
+    /// <summary>Poll until the HWND no longer exists (default 10 s). Returns false on timeout.</summary>
+    public async Task<bool> WaitForWindowGoneAsync(IntPtr hwnd, int timeoutMs = 10000)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (SafetySession.TryGetWindowInfo(hwnd) == null) return true;
+            await Task.Delay(200);
+        }
+        return false;
+    }
+
+    /// <summary>windows_wait for an element whose name contains <paramref name="query"/>; true when it appeared.</summary>
+    public async Task<bool> WaitForElementAsync(string windowHandle, string query, int timeoutMs = 15000, bool safety = false)
+    {
+        var wait = await Call("windows_wait", new Dictionary<string, object?>
+        {
+            ["window"] = windowHandle,
+            ["element"] = new Dictionary<string, object?> { ["query"] = query, ["state"] = "appears" },
+            ["timeout_ms"] = timeoutMs
+        }, safety);
+        return !wait.IsError && wait.Header?["satisfied"]?.GetValue<bool>() == true;
     }
 
     private static Process LaunchTestApp(string path)
@@ -404,15 +422,27 @@ public class TestAppFixture : IAsyncLifetime
     {
         var exe = appName + ".exe";
         var baseDir = AppContext.BaseDirectory;
-        var candidates = new[]
+
+        // Walk up to the repo root (contains src/) and use the app's own build output: the exe needs its
+        // .dll and .deps.json beside it, which the copies in this project's output directory lack.
+        var dir = new DirectoryInfo(baseDir);
+        while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src")))
         {
-            Path.Combine(baseDir, "TestApps", appName, exe),
-            Path.Combine(baseDir, exe),
-            Path.Combine(baseDir, "..", "..", "..", "TestApps", appName, "bin", "Debug", "net8.0-windows", exe),
-        };
+            dir = dir.Parent;
+        }
+        var candidates = new List<string>();
+        if (dir != null)
+        {
+            foreach (var cfg in new[] { "Debug", "Release" })
+            {
+                candidates.Add(Path.Combine(dir.FullName, "tests", "TestApps", appName, "bin", cfg, "net8.0-windows", exe));
+            }
+        }
+        candidates.Add(Path.Combine(baseDir, "TestApps", appName, exe));
+        candidates.Add(Path.Combine(baseDir, exe));
         foreach (var candidate in candidates)
         {
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate) && File.Exists(Path.ChangeExtension(candidate, ".dll"))) return candidate;
         }
         return null;
     }
