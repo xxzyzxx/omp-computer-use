@@ -36,7 +36,7 @@ publish (the output itself is self-contained).
 # from the repo root; publishes self-contained to publish/win-x64
 ./scripts/install-omp.ps1 -Publish
 
-# enable YOLO / allow-all for an already published install
+# enable YOLO / allow-all for an already published install (adds the --yolo flag)
 ./scripts/install-omp.ps1 -Yolo
 ```
 
@@ -47,9 +47,11 @@ Restart OMP after the first install so the skill and extension load; `/mcp list`
 confirms the server. Later MCP-only changes can use `/mcp reload`. Tools register as
 `mcp__windows_snapshot`, `mcp__windows_click`, … and `xd://mcp__windows_*` devices.
 
-Re-run the installer without `-Yolo` to remove its allow-all CLI flag, then reload
-MCP. A separately enabled `yolo` config value or `WINDOWS_MCP_YOLO` environment
-variable must also be disabled to return to normal mode.
+YOLO can equally be a config setting: put `"yolo": true` in
+`%LOCALAPPDATA%\WindowsComputerUse\config.json` and reload MCP. With either form no
+access or confirmation dialog is ever shown. To return to normal mode, set the config
+value back to `false`, re-run the installer without `-Yolo` (removes the CLI flag),
+and clear `WINDOWS_MCP_YOLO` if it is set.
 
 ### Manual mcp.json
 

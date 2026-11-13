@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit replay formats real argument properties and retains millisecond timestamps. The optional sandbox template now maps the actual publish directory to its documented sandbox path; runtime isolation remains unverified.
 - Mouse clicks, wheel scrolls and drags on a ref/mark target bring the element's window forward and return `occluded` instead of sending input to a different window covering it. Batches report `ok: false` when a step ends in `user_active` or `needs_user_confirmation`.
 - `windows_list_windows` lists the taskbar and open classic popup menus that no application window owns; snapshots name such menus under `popup_menus`. `windows_click` accepts `count: 0` to hover.
+- The approval dialog is laid out at the DPI of the monitor it opens on: at 300 % scaling it was 354 px wide with clipped text and two of its three buttons cut off. It now leads with the question ("Let the AI agent control …?") and centres after sizing. Derived config properties are no longer written into `config.json`.
 
 ## [0.2.0] - 2026-07-08
 

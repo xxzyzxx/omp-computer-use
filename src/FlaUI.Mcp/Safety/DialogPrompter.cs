@@ -23,8 +23,9 @@ public sealed class DialogPrompter : IUserPrompter
     public Task<PromptAnswer> AskAccessAsync(AccessPrompt prompt, CancellationToken cancel)
     {
         var apps = string.Join(", ", prompt.Apps);
-        var body = $"Apps: {apps}\nAccess level: {prompt.Tier.ToString().ToLowerInvariant()}\nReason given by the agent: {prompt.Reason}";
-        return ShowAsync("Access request from the AI agent", body, prompt.Timeout, cancel,
+        var verb = prompt.Tier == AccessTier.Control ? "control" : "view";
+        return ShowAsync("AI agent access request", $"Let the AI agent {verb} {apps}?",
+            $"Reason given by the agent: {prompt.Reason}", prompt.Timeout, cancel,
             ("Allow this session", PromptAnswer.AllowSession),
             ("Allow always", PromptAnswer.AllowAlways),
             ("Deny", PromptAnswer.Denied));
@@ -32,14 +33,14 @@ public sealed class DialogPrompter : IUserPrompter
 
     public Task<PromptAnswer> ConfirmAsync(ConfirmPrompt prompt, CancellationToken cancel)
     {
-        var body = $"Action: {prompt.Action}\nTarget: {prompt.Target}\nApp: {prompt.App}\nMatched safety rule: /{prompt.Pattern}/";
-        return ShowAsync("Risky action needs human confirmation", body, prompt.Timeout, cancel,
+        return ShowAsync("AI agent risky action", $"Let the AI agent {prompt.Action} \"{prompt.Target}\"?",
+            $"App: {prompt.App}\nMatched safety rule: /{prompt.Pattern}/", prompt.Timeout, cancel,
             ("Allow once", PromptAnswer.AllowSession),
             ("Deny", PromptAnswer.Denied));
     }
 
-    private async Task<PromptAnswer> ShowAsync(string title, string body, TimeSpan timeout, CancellationToken cancel,
-        params (string Label, PromptAnswer Answer)[] buttons)
+    private async Task<PromptAnswer> ShowAsync(string title, string question, string details, TimeSpan timeout,
+        CancellationToken cancel, params (string Label, PromptAnswer Answer)[] buttons)
     {
         var tcs = new TaskCompletionSource<PromptAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         PromptForm? form = null;
@@ -48,7 +49,7 @@ public sealed class DialogPrompter : IUserPrompter
 
         _ui.Invoke(() =>
         {
-            form = new PromptForm(title, body, timeout, buttons, tcs);
+            form = new PromptForm(title, question, details, timeout, buttons, tcs);
             form.Show();
             SystemSounds.Exclamation.Play();
         });
@@ -57,19 +58,31 @@ public sealed class DialogPrompter : IUserPrompter
         return await tcs.Task;
     }
 
-    /// <summary>Topmost countdown dialog; every close path completes the TaskCompletionSource exactly once.</summary>
+    /// <summary>
+    /// Topmost countdown dialog; every close path completes the TaskCompletionSource exactly once.
+    /// Pixel sizes are scaled to the DPI of the monitor it opens on: point-sized fonts grow with DPI, so
+    /// fixed pixel widths clip the text and the buttons on scaled displays.
+    /// </summary>
     private sealed class PromptForm : Form
     {
         private readonly TaskCompletionSource<PromptAnswer> _tcs;
         private readonly Label _countdown;
         private readonly DateTime _deadline;
         private readonly System.Windows.Forms.Timer _timer;
+        private readonly MonitorInfo? _monitor;
         private PromptAnswer _answer;
 
-        public PromptForm(string title, string body, TimeSpan timeout,
+        public PromptForm(string title, string question, string details, TimeSpan timeout,
             (string Label, PromptAnswer Answer)[] buttons, TaskCompletionSource<PromptAnswer> tcs)
         {
             _tcs = tcs;
+            _monitor = Native.GetCursorPos(out var pt)
+                ? Monitors.For(new Point(pt.X, pt.Y)) ?? Monitors.Primary()
+                : Monitors.Primary();
+            var scale = _monitor?.Scale ?? 1.0;
+            int Px(int logical) => (int)Math.Round(logical * scale);
+            var textWidth = Px(560);
+
             Text = title;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -79,43 +92,27 @@ public sealed class DialogPrompter : IUserPrompter
             TopMost = true;
             AutoScaleMode = AutoScaleMode.None;
             AutoSize = true;
-            AutoSizeMode = AutoSizeMode.GrowOnly;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-            var notice = new Label
+            Label Line(string text, float points, FontStyle style, Color color) => new()
             {
-                Text = "This request comes from the AI agent running on this computer. The agent cannot answer it — only you can.",
-                Dock = DockStyle.Top,
-                ForeColor = Color.FromArgb(180, 60, 0),
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                Padding = new Padding(14, 12, 14, 4),
+                Text = text,
                 AutoSize = true,
-                MaximumSize = new Size(532, 0)
+                UseMnemonic = false,
+                MaximumSize = new Size(textWidth, 0),
+                Margin = new Padding(0, 0, 0, Px(12)),
+                ForeColor = color,
+                Font = new Font("Segoe UI", points, style)
             };
-            var bodyLabel = new Label
-            {
-                Text = body,
-                Dock = DockStyle.Top,
-                Font = new Font("Segoe UI", 10f),
-                Padding = new Padding(14, 8, 14, 8),
-                AutoSize = true,
-                MaximumSize = new Size(532, 0)
-            };
-            _countdown = new Label
-            {
-                Dock = DockStyle.Top,
-                ForeColor = Color.DarkRed,
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                Padding = new Padding(14, 2, 14, 10),
-                AutoSize = true,
-                MaximumSize = new Size(532, 0)
-            };
+
+            _countdown = Line("", 10f, FontStyle.Regular, Color.DarkRed);
             var buttonPanel = new FlowLayoutPanel
             {
-                Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(10),
+                WrapContents = false,
                 AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Margin = new Padding(0, Px(4), 0, 0)
             };
             foreach (var (label, answer) in buttons)
             {
@@ -123,17 +120,29 @@ public sealed class DialogPrompter : IUserPrompter
                 {
                     Text = label,
                     AutoSize = true,
-                    Margin = new Padding(6, 3, 6, 3),
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    UseMnemonic = false,
+                    Padding = new Padding(Px(12), Px(5), Px(12), Px(5)),
+                    Margin = new Padding(0, 0, Px(10), 0),
                     Font = new Font("Segoe UI", 10f)
                 };
                 button.Click += (_, _) => Complete(answer);
                 buttonPanel.Controls.Add(button);
             }
 
-            Controls.Add(buttonPanel);
-            Controls.Add(_countdown);
-            Controls.Add(bodyLabel);
-            Controls.Add(notice);
+            var root = new TableLayoutPanel
+            {
+                ColumnCount = 1,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(Px(20), Px(18), Px(20), Px(18))
+            };
+            root.Controls.Add(Line(question, 13f, FontStyle.Bold, SystemColors.ControlText));
+            root.Controls.Add(Line(details, 10f, FontStyle.Regular, SystemColors.ControlText));
+            root.Controls.Add(Line("The agent cannot answer this dialog — only you can.", 9f, FontStyle.Regular, SystemColors.GrayText));
+            root.Controls.Add(_countdown);
+            root.Controls.Add(buttonPanel);
+            Controls.Add(root);
 
             _deadline = DateTime.UtcNow + timeout;
             _timer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -148,7 +157,15 @@ public sealed class DialogPrompter : IUserPrompter
                 _tcs.TrySetResult(_answer);
                 Dispose();
             };
-            CenterOnCursorMonitor();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            // Auto-sizing is final only once the handle exists; centre on the cursor's monitor now.
+            PerformLayout();
+            var area = _monitor?.WorkArea ?? Screen.PrimaryScreen?.WorkingArea ?? Rectangle.Empty;
+            Location = new Point(area.X + (area.Width - Width) / 2, area.Y + (area.Height - Height) / 2);
         }
 
         private void Tick()
@@ -167,20 +184,6 @@ public sealed class DialogPrompter : IUserPrompter
         {
             _answer = answer;
             Close();
-        }
-
-        private void CenterOnCursorMonitor()
-        {
-            var monitor = Native.GetCursorPos(out var pt)
-                ? Monitors.For(new Point(pt.X, pt.Y)) ?? Monitors.Primary()
-                : Monitors.Primary();
-            if (monitor == null)
-            {
-                StartPosition = FormStartPosition.CenterScreen;
-                return;
-            }
-            var area = monitor.WorkArea;
-            Location = new Point(area.X + (area.Width - Width) / 2, area.Y + (area.Height - Height) / 2);
         }
     }
 }

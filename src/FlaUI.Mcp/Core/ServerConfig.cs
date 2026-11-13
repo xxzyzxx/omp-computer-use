@@ -127,7 +127,10 @@ public sealed class ServerConfig
         "Notion.exe", "Figma.exe", "Postman.exe", "Signal.exe", "WhatsApp.exe", "electron.exe", "Cursor.exe"
     };
 
+    // Derived from the settings above; never written to or read from config.json.
+    [JsonIgnore]
     public bool IsBlockedAppsAllowed => Yolo || AllowBlockedApps;
+    [JsonIgnore]
     public bool IsPasswordGuardActive => PasswordGuard && !Yolo;
 
     public bool IsUia2App(string? processName)

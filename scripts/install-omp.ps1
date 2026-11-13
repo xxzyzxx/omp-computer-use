@@ -75,8 +75,16 @@ Write-Host "  exe:        $ExePath"
 Write-Host "  mcp.json:   $mcpPath (server name: windows)"
 Write-Host "  skill:      $skillDir\SKILL.md"
 Write-Host "  extension:  $extDir\windows-computer-use.ts"
+# The server also honours "yolo": true in its config file; report the mode it will really start in.
+$configPath = if ($env:WINDOWS_MCP_CONFIG) { $env:WINDOWS_MCP_CONFIG } else { Join-Path $env:LOCALAPPDATA "WindowsComputerUse/config.json" }
+$configYolo = $false
+if (Test-Path $configPath) {
+    try { $configYolo = [bool](Get-Content -Raw $configPath | ConvertFrom-Json).yolo } catch { }
+}
 if ($Yolo) {
     Write-Host "  mode:       --yolo (allow-all; read the safety section of README.md)"
+} elseif ($configYolo) {
+    Write-Host "  mode:       YOLO via `"yolo`": true in $configPath (allow-all, no dialogs)"
 } else {
     Write-Host "  mode:       default (access grants + confirmation gates on)"
 }
