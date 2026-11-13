@@ -248,6 +248,19 @@ internal static class Native
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
     public const uint GW_OWNER = 4;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
+
+    /// <summary>
+    /// For packaged (UWP/WinUI) apps the top-level HWND belongs to ApplicationFrameHost.exe; the app itself owns the
+    /// CoreWindow child. Returns that child's process id, or 0 when the window is not a frame host.
+    /// </summary>
+    public static uint GetHostedAppProcessId(IntPtr frameHwnd)
+    {
+        var core = FindWindowExW(frameHwnd, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null);
+        if (core == IntPtr.Zero) return 0;
+        var pid = GetWindowProcessId(core);
+        return pid == GetWindowProcessId(frameHwnd) ? 0 : pid;
+    }
 
     /// <summary>Top-level windows in Z-order (front to back).</summary>
     public static List<IntPtr> TopLevelWindows()

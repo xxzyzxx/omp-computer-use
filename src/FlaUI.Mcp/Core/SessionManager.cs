@@ -103,6 +103,9 @@ public class SessionManager : IDisposable
     {
         if (hwnd == IntPtr.Zero || !Native.IsWindow(hwnd)) return null;
         var pid = Native.GetWindowProcessId(hwnd);
+        // Packaged apps: the frame belongs to ApplicationFrameHost.exe, the app owns the CoreWindow child.
+        var hosted = Native.GetHostedAppProcessId(hwnd);
+        if (hosted != 0) pid = hosted;
         var exe = Native.GetProcessImagePath(pid);
         var bounds = Native.GetVisibleWindowBounds(hwnd);
         var monitor = Monitors.ForWindow(hwnd);
