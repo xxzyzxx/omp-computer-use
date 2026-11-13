@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Window capture switched to `PrintWindow` (PW_RENDERFULLCONTENT) with bitblt fallback; monitor captures redact blocked-app windows.
 - All coordinates inside the server are physical pixels (Per-Monitor-DPI-Aware v2); the model works in image pixels via the `image_id` mapping.
+- Explorer acceptance now creates a folder, renames it, pastes its initial name through the clipboard and drags a file into it in one batch with a final snapshot diff. The drag uses a separate source window so a rename cannot silently reuse a stale destination ref.
 
 ## [0.2.0] - 2026-07-08
 
