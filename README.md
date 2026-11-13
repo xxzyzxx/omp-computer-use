@@ -1,293 +1,239 @@
-# FlaUI-MCP
+# Windows Computer-Use MCP
 
-An MCP (Model Context Protocol) server that enables AI agents to automate Windows desktop applications using accessibility APIs - the same way Playwright automates browsers.
+An MCP (Model Context Protocol) server that lets an AI agent operate native Windows
+desktop applications — through UI Automation refs, not pixel guessing — behind a
+server-side safety layer designed for an agent that runs mostly unattended.
 
-[![Build](https://github.com/shanselman/FlaUI-MCP/actions/workflows/build.yml/badge.svg)](https://github.com/shanselman/FlaUI-MCP/actions/workflows/build.yml)
-[![GitHub release](https://img.shields.io/github/v/release/shanselman/FlaUI-MCP)](https://github.com/shanselman/FlaUI-MCP/releases)
+Fork of [shanselman/FlaUI-MCP](https://github.com/shanselman/FlaUI-MCP), which applied
+the Playwright snapshot/ref pattern to Windows; this fork turns it into a full
+computer-use surface (refs + set-of-marks screenshots + batch + safety gates) built
+for the [OMP](https://github.com/can1357/oh-my-pi) harness.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Why This Exists
-
-When Playwright's MCP server automates browsers, it provides:
-- `browser_snapshot` → Structured accessibility tree with element refs
-- `browser_click ref="..."` → Click by ref, not coordinates
-
-**FlaUI-MCP brings the same pattern to Windows desktop apps:**
-- `windows_snapshot` → Accessibility tree with refs like `w1e5`
-- `windows_click ref="w1e5"` → Click element by ref
-
-No screenshot parsing. No coordinate guessing. Just semantic element references.
-
-## Quick Demo
+## How it works
 
 ```
-Agent: Calculate 3 × 3
-
-1. windows_launch { "app": "calc.exe" }
-   → Window handle: w1
-
-2. windows_snapshot { "handle": "w1" }
-   → - window "Calculator" [ref=w1]
-       - button "Three" [ref=w1e43]
-       - button "Multiply by" [ref=w1e35]
-       - button "Equals" [ref=w1e38]
-       - text "Display is 0" [ref=w1e15]
-
-3. windows_batch { "actions": [
-     {"action": "click", "ref": "w1e43"},
-     {"action": "click", "ref": "w1e35"},
-     {"action": "click", "ref": "w1e43"},
-     {"action": "click", "ref": "w1e38"},
-     {"action": "snapshot", "handle": "w1"}
-   ]}
-   → 1. click: Invoked Three
-     2. click: Invoked Multiply by
-     3. click: Invoked Three
-     4. click: Invoked Equals
-     5. snapshot: ... "Display is 9" ...
+Agent (main model) ── stdio MCP ──► FlaUI.Mcp.exe (.NET 8, FlaUI 5)
+  snapshot → click ref → verify        │ UIA3 / UIA2 trees, refs w1e5
+                                       │ PNG screenshots + numbered marks
+                                       │ SafetyGate: grants, kill switch, overlay,
+                                       │   user-input yield, confirm dialogs, audit
+                                       ▼
+                                    Windows desktop (physical pixels inside)
 ```
 
-## Installation
+There is **no second model**: the server does no perception of its own. The main model
+reads the UIA tree and the screenshots and decides everything. Coordinates you send
+are image pixels; the server maps them to physical pixels.
 
-### Prerequisites
-- Windows 10/11
-- .NET 8.0 Runtime
+## Install (OMP)
 
-### Download Release
+Requires Windows 10/11 and the [.NET 8 SDK](https://dotnet.microsoft.com/download) to
+publish (the output itself is self-contained).
 
-Download the latest release from [Releases](https://github.com/shanselman/FlaUI-MCP/releases) and extract to a folder.
+```powershell
+# from the repo root; publishes self-contained to publish/win-x64
+./scripts/install-omp.ps1 -Publish
 
-Choose the ZIP that matches your machine:
+# with YOLO / allow-all mode (see "Safety model" first)
+./scripts/install-omp.ps1 -Publish -Yolo
+```
 
-| Asset | Use when |
-|-------|----------|
-| `FlaUI-MCP-win-x64-*-self-contained.zip` | 64-bit Windows, no .NET runtime required |
-| `FlaUI-MCP-win-x64-*.zip` | 64-bit Windows with .NET 8 Runtime already installed |
-| `FlaUI-MCP-win-arm64-*-self-contained.zip` | Windows on ARM64, no .NET runtime required |
-| `FlaUI-MCP-win-arm64-*.zip` | Windows on ARM64 with .NET 8 Runtime already installed |
+The script merges the `windows` entry into `~/.omp/agent/mcp.json` (preserving other
+servers), copies the skill to `~/.omp/agent/skills/windows-computer-use/SKILL.md` and
+the kill-switch extension to `~/.omp/agent/extensions/windows-computer-use.ts`. Then
+in omp: `/mcp reload` (or restart), `/mcp list` to confirm. Tools register as
+`mcp__windows_snapshot`, `mcp__windows_click`, … and as `xd://mcp__windows_*` devices.
 
-### Configure MCP Client
+### Manual mcp.json
 
-Add to your MCP configuration (e.g., `~/.copilot/mcp-config.json`):
+See [`harness/omp/mcp.example.json`](harness/omp/mcp.example.json):
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
     "windows": {
-      "type": "local",
-      "command": "C:\\path\\to\\FlaUI-MCP.exe",
-      "tools": ["*"]
+      "type": "stdio",
+      "command": "C:\\path\\to\\publish\\win-x64\\FlaUI.Mcp.exe",
+      "args": [],
+      "timeout": 200000
     }
   }
 }
 ```
 
-Or using `dotnet run`:
-
-```json
-{
-  "mcpServers": {
-    "windows": {
-      "type": "local",
-      "command": "dotnet",
-      "args": ["run", "--project", "C:\\path\\to\\src\\FlaUI.Mcp"]
-    }
-  }
-}
-```
-
-## Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `windows_launch` | Launch a Windows application |
-| `windows_snapshot` | Get accessibility tree with element refs |
-| `windows_click` | Click an element by ref |
-| `windows_type` | Type text into an element |
-| `windows_send_keys` | Send key presses or key chords (for example `Ctrl+A`) |
-| `windows_fill` | Clear and fill a text field |
-| `windows_get_text` | Get text content of an element |
-| `windows_screenshot` | Capture window/element as PNG |
-| `windows_list_windows` | List all open windows |
-| `windows_focus` | Bring a window to foreground |
-| `windows_close` | Close a window |
-| `windows_batch` | Execute multiple actions in one call |
-
-`windows_snapshot` accepts an optional `maxDepth` argument to include more or
-fewer levels of the accessibility tree. It defaults to `10`; `windows_batch`
-snapshot actions accept the same argument.
-
-`windows_screenshot` supports an optional `background: true` argument when a
-window `handle` is provided. This uses native background capture when available
-and falls back to the normal screenshot path if Windows returns a blank frame.
-It can also save screenshots with `savePath`, which must be an absolute local
-`.png` path. Existing files are not replaced unless `overwrite: true` is set.
-
-Tool calls have a 30-second timeout so a blocked UI Automation provider or modal
-dialog returns an actionable error instead of hanging the MCP server forever.
-
-### Tool Examples
-
-Send a keyboard chord to a target element:
-
-```json
-{
-  "ref": "w1e5",
-  "chord": "Ctrl+A"
-}
-```
-
-Send a sequence of key presses or chords:
-
-```json
-{
-  "keys": ["Ctrl+A", "Delete", "Enter"]
-}
-```
-
-Capture a window using opt-in background capture:
-
-```json
-{
-  "handle": "w1",
-  "background": true
-}
-```
-
-Save a screenshot to disk without replacing existing files:
-
-```json
-{
-  "handle": "w1",
-  "savePath": "C:\\Temp\\capture.png"
-}
-```
-
-Replace an existing screenshot file explicitly:
-
-```json
-{
-  "handle": "w1",
-  "savePath": "C:\\Temp\\capture.png",
-  "overwrite": true
-}
-```
-
-### Safety and Limitations
-
-- Keyboard input is focus-dependent. When you use `windows_send_keys`, the tool
-  focuses the supplied `ref` first when possible, but Windows still sends keys to
-  the active keyboard focus.
-- `windows_screenshot` `background: true` is only valid with a window `handle`.
-  If native background capture returns a blank frame, FlaUI-MCP falls back to the
-  normal capture path.
-- `savePath` accepts absolute local `.png` paths only. UNC paths, device paths,
-  non-PNG extensions, and existing files without `overwrite: true` are rejected.
-- Desktop integration tests require an interactive Windows session because they
-  launch real WinForms and WPF windows.
-- A timeout error means the MCP request returned, but a blocked Windows UI
-  Automation provider or modal dialog may still need to be dismissed before
-  retrying the operation.
-
-## How It Works
-
-### The Accessibility Snapshot
-
-When you call `windows_snapshot`, you get a structured text tree:
-
-```
-- window "Calculator" [ref=w1e1]
-  - group "Number pad" [ref=w1e39]
-    - button "Seven" [ref=w1e47]
-    - button "Eight" [ref=w1e48]
-    - button "Nine" [ref=w1e49]
-  - text "Display is 0" [ref=w1e15]
-```
-
-This comes from **Windows UI Automation** - the same API screen readers use. Each element has:
-- **Role** (button, text, group, textbox)
-- **Name** ("Seven", "Display is 0")
-- **Ref** (w1e47) - a handle for interaction
-- **State** ([disabled], [readonly], [checked])
-
-### Why Not Screenshots?
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Accessibility Tree** | Semantic, precise, fast, works at any resolution | Requires UI Automation support |
-| **Screenshot + Vision** | Works with any app | Slow, expensive, imprecise, resolution-dependent |
-
-FlaUI-MCP uses accessibility because it's what screen readers use - it's designed for programmatic UI interaction.
-
-## Building from Source
+### Publishing by hand
 
 ```powershell
-# Clone
-git clone https://github.com/shanselman/FlaUI-MCP.git
-cd FlaUI-MCP
-
-# Build
-dotnet build src/FlaUI.Mcp
-
-# Run
-dotnet run --project src/FlaUI.Mcp
+./scripts/publish.ps1            # win-x64
+./scripts/publish.ps1 -Arm64     # win-arm64
 ```
 
-### Testing
+## Tool reference
+
+All tools are namespaced `windows_*` in the `windows` server. `window` specs accepted
+by most tools: omitted = foreground, `w3` = window handle, `pid:1234`, a title
+substring, or a process name. Targeting order everywhere: `ref` → `mark` → `x,y`
+(+ optional `image_id`).
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `windows_list_windows` | Top-level windows: handle, pid, process, title, monitor, rect. Ungated. | — |
+| `windows_snapshot` | Pruned UIA tree with refs `w1e5`, roles, names, bounds, a generation number for diffing. | `window`, `interactive_only`, `diff_since` |
+| `windows_find` | Search element names in a window; returns refs. | `window`, name filter |
+| `windows_get_text` | Text content of an element, in an `<untrusted_screen_text>` block. | `ref` |
+| `windows_screenshot` | PNG of a window/monitor (or `monitor: "all"`); `marks: true` overlays numbered marks for interactive elements. Returns `image` mapping with `image_id`. | `window`, `monitor`, `marks` |
+| `windows_zoom` | Magnified crop around a point/region of the latest image; for small or dense areas. | `x`, `y`, `image_id`, `window` |
+| `windows_click` | Click via Invoke/Toggle/Selection patterns, else synthetic click at the clickable point. | `ref` \| `mark` \| `x,y`(+`image_id`) |
+| `windows_type` | Type text into an element (Value pattern / focus + keys). | `ref`, `text` |
+| `windows_fill` | Clear and fill a field. | `ref`, `value` |
+| `windows_key` (alias `windows_send_keys`) | Key presses/chords to the focused element, e.g. `["Ctrl+S", "Enter"]`. | `chord`, `keys` |
+| `windows_scroll` | Scroll at a target. | `ref` \| `x,y`, direction/amount |
+| `windows_drag` | Drag from one target to another. | from/to `ref` or `x,y` |
+| `windows_launch` | Start an app; gated like any action. | `app`, `args` |
+| `windows_focus` | Bring a window to the foreground. | `window` |
+| `windows_close` | Close a window. | `window` / `ref` |
+| `windows_clipboard_read` | Read clipboard text. | — |
+| `windows_clipboard_write` | Write clipboard text. | `text` |
+| `windows_wait` | Wait for UI quiet / element state before verifying. | `window`, `stable`, `timeout_ms` |
+| `windows_batch` | Run 2+ steps in one call, optionally wait-stable between steps, return a final snapshot diff or screenshot. | `steps`, `wait_stable_between`, `return: "snapshot_diff"\|"screenshot"` |
+| `windows_request_access` | Ask the human for `view`/`control` on exe names, with a one-line reason; a topmost dialog asks. | `apps`, `tier`, `reason` |
+| `windows_list_access` | Current grants and control lock state. | — |
+| `windows_release` | Drop grants and the control lock when done. | — |
+| `windows_resume` | Clear the user-active pause once the user says go ahead. | — |
+| `windows_status` | Server/safety status: mode, hotkey, grants, audit dir. | — |
+
+## Coordinate model
+
+Inside the server every coordinate is a **physical pixel** (Per-Monitor-DPI-Aware v2;
+tested at 300 % scaling). The model never sees physical pixels: every image result
+carries an `image` mapping (`image_id`, size, origin, scale), and any `x,y` you pass
+is interpreted as pixels of the most recent image — or of `image_id` if given — and
+mapped back for you. Points outside the frame return `bad_coordinates` with "take a
+new screenshot" as the remedy. On multi-monitor setups (e.g. monitor 2 at negative
+y), windows carry their monitor id; screenshots never span monitors unless you ask
+for `monitor: "all"`.
+
+## Configuration
+
+`config.json` lives at `%LOCALAPPDATA%\WindowsComputerUse\config.json`
+(override: `--config <path>` or `WINDOWS_MCP_CONFIG`). A file with defaults is
+written on first run; the full annotated example is
+[`src/FlaUI.Mcp/config.example.json`](src/FlaUI.Mcp/config.example.json).
+CLI flags and environment variables override the file.
+
+| Key | Default | What it does | Override |
+|---|---|---|---|
+| `yolo` | `false` | Allow-all mode (see safety model). | `--yolo` / `WINDOWS_MCP_YOLO` |
+| `toolTimeoutMs` | `30000` | Per-call tool timeout. | — |
+| `uiaTransactionTimeoutMs` | `5000` | Per-UIA-call provider timeout. | — |
+| `uiaConnectionTimeoutMs` | `3000` | UIA connection timeout. | — |
+| `uia2Apps` | `[]` | Exe names automated via UIA2 instead of UIA3. | — |
+| `maxScreenshotEdge` | `1568` | Screenshot long-edge downscale target. | `--max-edge N` |
+| `snapshotMaxChars` | `24000` | Snapshot output cap (~4 chars/token). | — |
+| `snapshotMaxNodes` | `600` | Snapshot node cap after pruning. | — |
+| `killSwitchHotkey` | `ctrl+alt+pause` | Kill-switch hotkey (RegisterHotKey syntax). | `--hotkey` |
+| `idleResumeSeconds` | `3.0` | Idle seconds after user input before actions may resume. | — |
+| `userInputMouseDeadZonePx` | `4` | Mouse jitter below this many px is ignored. | — |
+| `userActiveWaitMs` | `8000` | How long an action waits for idle before returning `user_active`. | — |
+| `overlay` | `true` | "Agent is driving" topmost overlay while control is held. | `--no-overlay` / `WINDOWS_MCP_NO_OVERLAY` |
+| `prompts` | `"dialog"` | Approval surface: `"dialog"` (topmost window) or `"deny"` (headless: all requests refused). | `--prompts dialog\|deny` / `WINDOWS_MCP_PROMPTS` |
+| `promptTimeoutSeconds` | `60` | Human answer window for dialogs. | — |
+| `allowlist` | `{}` | Apps holding a tier without asking: `{"notepad.exe": "control"}`. | — |
+| `blockedApps` | see example | Refused even with a grant; `.exe` entries match the process, others are title regexes. | `allowBlockedApps` / YOLO |
+| `allowBlockedApps` | `false` | Override the blocklist (implied by YOLO). | — |
+| `blockHarnessTerminal` | `true` | Also block the process chain that launched the server (your terminal). | — |
+| `riskyPatterns` | see example | Element-name regexes that require human confirmation before a click. | — |
+| `passwordGuard` | `true` | Refuse to type into UIA password fields. Off under YOLO. | — |
+| `auditDir` | `%LOCALAPPDATA%\WindowsComputerUse\audit` | Append-only JSONL audit log; empty disables. | `--audit-dir` / `--no-audit` |
+| `grantsPath` | `%LOCALAPPDATA%\WindowsComputerUse\grants.json` | Persisted "always" grants. | — |
+| `electronApps` | see example | Electron/Chromium hosts that get the thin-tree hint. | — |
+
+## Safety model
+
+Everything here is enforced **server-side**, in the process the agent cannot touch:
+
+- **Access grants.** Action tools refuse un-granted apps; `windows_request_access`
+  shows a topmost dialog with your reason; a human approves. Grants are per-app and
+  per-tier; `windows_release` drops them.
+- **Kill switch.** `Ctrl+Alt+Pause` (configurable): aborts running tools and batches,
+  releases held mouse/keyboard input, revokes control grants, and notifies the host
+  (`notifications/windows/kill_switch`). The bundled OMP extension turns that into
+  `ctx.abort()` — the current agent turn stops — plus a user warning and a next-turn
+  note telling the model to stop. In omp you can also run `/windows-killswitch`.
+- **User input wins.** Real mouse/keyboard activity pauses injection until the user
+  has been idle `idleResumeSeconds`; the agent gets `user_active` and must wait.
+- **Overlay.** A topmost "agent is driving" frame while the control lock is held; it
+  is excluded from captures.
+- **Untrusted screen text.** All screen-derived text is wrapped in
+  `<untrusted_screen_text>` blocks; the skill and the server instructions tell the
+  model to treat it as data and report embedded instructions.
+- **Confirmation gates.** Clicks on elements matching `riskyPatterns` (pay, delete
+  permanently, uninstall, …) return `needs_user_confirmation` and only proceed after
+  a human confirms the dialog.
+- **Password guard.** UIA password fields are never typed into.
+- **Audit log.** Append-only JSONL of every tool call (arguments redacted for
+  secrets) in `auditDir`; replay calls with `node scripts/mcp-call.mjs <exe> -- '<tool>' '<json>'`.
+- **Blocked apps.** `consent.exe`, UAC/credential UI, password managers, Windows
+  Security, banking/payment title regexes — and, by default, the terminal that
+  launched the server (so the agent cannot automate its own harness).
+
+**What YOLO turns off:** access prompts (every app auto-granted `control`, blocked
+apps included), confirmation gates, the user-input pause, and the password-field
+guard. **What stays on:** the kill switch, focus safety, stale-ref checks, the audit
+log, and the overlay (disable the overlay separately with `--no-overlay`).
+
+## Platform notes
+
+- **DPI.** Per-Monitor-DPI-Aware v2 via `app.manifest`; developed and verified on two
+  3840×2160 monitors at 300 % scaling. Never assumes 96 DPI.
+- **Electron.** Chromium trees are thin; the server hints `marks` +
+  `--force-renderer-accessibility` for known Electron apps.
+- **UIA2.** Some WinForms apps behave better with the legacy provider; list their exe
+  names in `uia2Apps`.
+- **Multi-monitor.** Windows report their monitor; captures are per-monitor unless
+  `monitor: "all"`. Works with mixed DPI and negative-origin monitors.
+
+## Known limits
+
+- No `Windows.Graphics.Capture` path; window capture uses `PrintWindow`
+  (PW_RENDERFULLCONTENT) with a bitblt fallback. Some DirectX-exclusive apps come
+  back blank.
+- No guarantees over remote-session software (Parsec, RDP with GPU remoting, …);
+  untested there.
+- Monitor screenshots **redact blocked-app windows** rather than showing them.
+- `windows_launch` of an app you have not been granted will refuse, like any action.
+- Windows Sandbox / separate-user isolation: scripts are provided under
+  [`sandbox/`](sandbox/README.md) but are **not verified** on the development machine.
+- Integration tests need an interactive desktop session; CI runs unit tests only.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `/mcp list` shows the server failing | Run the exe from a terminal; check the stderr banner (`yolo=`, `hotkey=`) and any `[config]` notes. |
+| `stale_ref` repeatedly | The UI is changing under you; take a fresh `windows_snapshot` and use the new refs. |
+| `bad_coordinates` | Your `x,y` predates the latest image; take a new screenshot (or pass the right `image_id`). |
+| `user_active` loops | The human is typing/moving the mouse; wait, or ask them to stop touching the machine. |
+| `needs_user_confirmation` never resolves | A topmost dialog is waiting on the desktop; tell the user to answer it. |
+| Kill switch does not register | The hotkey is taken (`registered=false` in the stderr banner and audit log); pick another with `--hotkey`. |
+| Blank screenshots | The app renders via DirectX/hardware overlay; try `windows_snapshot` instead, or focus the window first. |
+| Server blocked from automating your terminal | That is `blockHarnessTerminal`; launch omp from a different terminal than the one you want automated, or set it to `false` deliberately. |
+
+## Building from source
 
 ```powershell
-# Unit tests
-dotnet test tests\FlaUI.Mcp.Tests
-
-# Desktop integration tests; requires an interactive Windows session
-dotnet test tests\FlaUI.Mcp.IntegrationTests
+dotnet build FlaUI.Mcp.slnx
+dotnet test tests/FlaUI.Mcp.Tests          # unit tests
+dotnet test tests/FlaUI.Mcp.IntegrationTests  # needs an interactive desktop session
 ```
 
-## Architecture
+## License & acknowledgments
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  AI Agent (GitHub Copilot, Claude, etc.)                        │
-│  - Calls MCP tools: windows_snapshot, windows_click, etc.       │
-└─────────────────────────────────────────────────────────────────┘
-                              │ MCP Protocol (JSON-RPC over stdio)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  FlaUI-MCP Server (.NET 8)                                      │
-│  - Implements MCP tool handlers                                 │
-│  - Builds agent-friendly accessibility snapshots                │
-│  - Maps element refs ↔ AutomationElements                       │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  FlaUI Library (github.com/FlaUI/FlaUI)                         │
-│  - UIA3Automation for modern apps (WPF, UWP, Win32)            │
-│  - Control patterns: Invoke, Value, Toggle, Selection           │
-│  - Tree walking and element discovery                           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Supported Applications
-
-Works with any Windows application that supports UI Automation:
-- ✅ Win32 apps (Notepad, Explorer, etc.)
-- ✅ WPF applications
-- ✅ WinForms applications  
-- ✅ UWP/Store apps (Calculator, Settings, etc.)
-- ⚠️ Electron apps (partial - depends on accessibility implementation)
-- ❌ Games (typically no UI Automation support)
-
-## Contributing
-
-Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- [FlaUI](https://github.com/FlaUI/FlaUI) - The excellent .NET UI Automation library this project is built on
-- [Playwright](https://playwright.dev/) - Inspiration for the snapshot/ref interaction model
-- [Model Context Protocol](https://modelcontextprotocol.io/) - The protocol that makes this possible
+MIT — see [LICENSE](LICENSE). Built on [FlaUI](https://github.com/FlaUI/FlaUI)
+(.NET UI Automation), inspired by [Playwright](https://playwright.dev/)'s
+snapshot/ref interaction model and the
+[Model Context Protocol](https://modelcontextprotocol.io/). Upstream project:
+[shanselman/FlaUI-MCP](https://github.com/shanselman/FlaUI-MCP).

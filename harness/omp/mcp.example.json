@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "windows": {
+      "type": "stdio",
+      "command": "C:\\tmp\\wmcp-e\\publish\\win-x64\\FlaUI.Mcp.exe",
+      "args": [],
+      "timeout": 200000
+    }
+  }
+}
