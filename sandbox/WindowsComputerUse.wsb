@@ -1,0 +1,13 @@
+<Configuration>
+  <!-- Map the published server read-only into the sandbox. Adjust HostFolder to your checkout. -->
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\tmp\wmcp-e\publish\win-x64</HostFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <Networking>Enable</Networking>
+  <LogonCommand>
+    <Command>powershell -NoExit -Command "Set-Location C:\WindowsComputerUse"</Command>
+  </LogonCommand>
+</Configuration>
