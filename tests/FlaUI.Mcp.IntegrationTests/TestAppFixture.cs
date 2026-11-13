@@ -1,31 +1,62 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
+using FlaUI.Mcp.IntegrationTests;
 using PlaywrightWindows.Mcp;
 using PlaywrightWindows.Mcp.Core;
+using PlaywrightWindows.Mcp.Safety;
 using PlaywrightWindows.Mcp.Tools;
 
 namespace FlaUI.Mcp.IntegrationTests;
 
 /// <summary>
-/// Shared fixture that launches the WinForms and WPF test apps once per test collection.
-/// Provides SessionManager and ElementRegistry for all tests to share.
-/// Implements IAsyncLifetime for proper async setup/teardown.
+/// Result of one MCP tool call made through the registry.
+/// </summary>
+public sealed record ToolCallResult(JsonNode? Header, string? Untrusted, bool IsError, byte[]? Png, string? RawText);
+
+/// <summary>
+/// Shared fixture that launches the WinForms and WPF test apps once per test collection and
+/// builds the same object graph as Program.cs — twice: once for the functional config
+/// (yolo=true, headless) and once for the safety config (yolo=false, deny-prompter).
 /// </summary>
 public class TestAppFixture : IAsyncLifetime
 {
     private const int WindowPollIntervalMs = 250;
     private const int WindowPollTimeoutMs = 15000;
 
-    public SessionManager Session { get; } = new();
-    public ElementRegistry Elements { get; } = new();
+    // Shared across both graphs.
+    public UiThread Ui { get; private set; } = null!;
+
+    // Functional config (Yolo=true).
+    public ServerConfig FunctionalConfig { get; private set; } = null!;
+    public ToolRegistry FunctionalRegistry { get; private set; } = null!;
+    public Services FunctionalServices { get; private set; } = null!;
+    public SafetyGate FunctionalGate { get; private set; } = null!;
+    public SafetyState FunctionalState { get; private set; } = null!;
+    public SessionManager FunctionalSession { get; private set; } = null!;
+    public AuditLog FunctionalAudit { get; private set; } = null!;
+
+    // Safety config (Yolo=false).
+    public ServerConfig SafetyConfig { get; private set; } = null!;
+    public ToolRegistry SafetyRegistry { get; private set; } = null!;
+    public Services SafetyServices { get; private set; } = null!;
+    public SafetyGate SafetyGateInstance { get; private set; } = null!;
+    public SafetyState SafetyState { get; private set; } = null!;
+    public SessionManager SafetySession { get; private set; } = null!;
+    public AuditLog SafetyAudit { get; private set; } = null!;
+    public AccessPolicy SafetyPolicy { get; private set; } = null!;
+    public DenyPrompter SafetyPrompter { get; private set; } = null!;
 
     public string WinFormsHandle { get; private set; } = "";
     public string WpfHandle { get; private set; } = "";
 
     private Process? _winFormsProcess;
     private Process? _wpfProcess;
+    private string _tempDir = "";
+    private string _tempGrantsPath = "";
 
     public async Task InitializeAsync()
     {
@@ -36,19 +67,51 @@ public class TestAppFixture : IAsyncLifetime
             ?? throw new Exception(
                 "WpfTestApp not found. Build it first: dotnet build tests/TestApps/WpfTestApp");
 
+        _tempDir = Path.Combine(Path.GetTempPath(), "flaui-mcp-it-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempDir);
+        _tempGrantsPath = Path.Combine(_tempDir, "grants.json");
+
+        FunctionalConfig = new ServerConfig
+        {
+            Yolo = true,
+            Overlay = false,
+            AuditDir = _tempDir,
+            GrantsPath = _tempGrantsPath,
+            Prompts = "deny",
+            UserActiveWaitMs = 500,
+            IdleResumeSeconds = 5,
+        };
+        SafetyConfig = new ServerConfig
+        {
+            Yolo = false,
+            Overlay = false,
+            AuditDir = _tempDir,
+            GrantsPath = _tempGrantsPath,
+            Prompts = "deny",
+            PromptTimeoutSeconds = 1,
+            UserActiveWaitMs = 500,
+            IdleResumeSeconds = 5,
+        };
+
+        Ui = new UiThread();
+
+        (FunctionalSession, FunctionalRegistry, FunctionalServices, FunctionalGate, FunctionalState, FunctionalAudit) =
+            BuildGraph(FunctionalConfig);
+        (SafetySession, SafetyRegistry, SafetyServices, SafetyGateInstance, SafetyState, SafetyAudit) =
+            BuildGraph(SafetyConfig);
+
         _winFormsProcess = LaunchTestApp(winFormsPath);
         _wpfProcess = LaunchTestApp(wpfPath);
         var winFormsProcessId = _winFormsProcess.Id;
         var wpfProcessId = _wpfProcess.Id;
 
-        // Poll for both windows to appear
+        // Poll for both windows to appear.
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < WindowPollTimeoutMs
                && (WinFormsHandle == "" || WpfHandle == ""))
         {
             await Task.Delay(WindowPollIntervalMs);
-
-            var desktop = Session.Automation.GetDesktop();
+            var desktop = SafetySession.Automation.GetDesktop();
             var windows = desktop.FindAllChildren(cf => cf.ByControlType(ControlType.Window));
             foreach (var w in windows)
             {
@@ -58,13 +121,13 @@ public class TestAppFixture : IAsyncLifetime
                     && processId == winFormsProcessId
                     && WinFormsHandle == "")
                 {
-                    WinFormsHandle = Session.RegisterWindow(win);
+                    WinFormsHandle = SafetySession.RegisterWindow(win);
                 }
                 else if (win?.Title == "FlaUI-MCP WPF Test App"
                          && processId == wpfProcessId
                          && WpfHandle == "")
                 {
-                    WpfHandle = Session.RegisterWindow(win);
+                    WpfHandle = SafetySession.RegisterWindow(win);
                 }
             }
         }
@@ -79,51 +142,209 @@ public class TestAppFixture : IAsyncLifetime
     {
         CloseProcess(_winFormsProcess);
         CloseProcess(_wpfProcess);
-        Session.Dispose();
+        try
+        {
+            SafetySession.Dispose();
+            FunctionalSession.Dispose();
+        }
+        catch
+        {
+            // best effort — the session may already be dead.
+        }
+        try
+        {
+            Ui.Dispose();
+        }
+        catch
+        {
+            // best effort — the UI thread may already be dead.
+        }
+        try
+        {
+            if (Directory.Exists(_tempDir))
+            {
+                Directory.Delete(_tempDir, recursive: true);
+            }
+        }
+        catch
+        {
+            // best effort.
+        }
         return Task.CompletedTask;
     }
 
-    private static Process LaunchTestApp(string path)
+    /// <summary>
+    /// Mirrors Program.cs's object graph: config, audit, ui thread, safety gate, session manager,
+    /// services, tool registry and the five Register calls. Test-controlled config per fixture use.
+    /// </summary>
+    private (SessionManager, ToolRegistry, Services, SafetyGate, SafetyState, AuditLog) BuildGraph(ServerConfig config)
     {
-        var psi = new ProcessStartInfo(path) { UseShellExecute = true };
-        return Process.Start(psi) ?? throw new InvalidOperationException($"Failed to launch test app: {path}");
+        var audit = new AuditLog(config.AuditDir);
+        var state = new SafetyState(config);
+        var policy = new AccessPolicy(config);
+        IUserPrompter prompter = config.Prompts == "dialog" ? new DialogPrompter(Ui, config) : new DenyPrompter();
+        using IOverlay overlay = config.Overlay ? new ControlOverlay(Ui, config) : new NullOverlay();
+        ScreenCapture.CaptureScope = overlay.HideScope;
+        var gate = new SafetyGate(state, policy, prompter, overlay, config);
+        var session = new SessionManager(config);
+        var services = new Services(config, session, new ElementRegistry(), new FrameStore(), gate, Ui, audit);
+        var tools = new ToolRegistry(gate, config, audit);
+        tools.RegisterTool(new StatusTool(services));
+        SnapshotTools.Register(tools, services);
+        ScreenshotTools.Register(tools, services);
+        ActionTools.Register(tools, services);
+        SafetyTools.Register(tools, services);
+        return (session, tools, services, gate, state, audit);
     }
 
-    private static string? FindTestAppPath(string appName)
-    {
-        var baseDir = AppContext.BaseDirectory;
-
-        // Walk up to find the repo root (contains src/)
-        var dir = new DirectoryInfo(baseDir);
-        while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src")))
-        {
-            dir = dir.Parent;
-        }
-
-        if (dir == null) return null;
-
-        var searchPaths = new[]
-        {
-            Path.Combine(dir.FullName, "tests", "TestApps", appName, "bin", "Debug", "net8.0-windows", $"{appName}.exe"),
-            Path.Combine(dir.FullName, "tests", "TestApps", appName, "bin", "Release", "net8.0-windows", $"{appName}.exe"),
-        };
-
-        return searchPaths.FirstOrDefault(File.Exists);
-    }
-
-    public Window? GetWinFormsWindow() => Session.GetWindow(WinFormsHandle);
-    public Window? GetWpfWindow() => Session.GetWindow(WpfHandle);
+    public Window? GetWinFormsWindow() => SafetySession.GetWindow(WinFormsHandle);
+    public Window? GetWpfWindow() => SafetySession.GetWindow(WpfHandle);
 
     /// <summary>
-    /// Call an MCP tool with the given arguments and return the text result.
-    /// Shared helper to avoid duplication across test classes.
+    /// Call an MCP tool with the given arguments by name through the registry, so tests stay
+    /// independent of tool class names. Uses the functional graph by default; pass safety=true
+    /// for the safety-config graph.
     /// </summary>
-    public async Task<string> CallTool(ToolBase tool, object args)
+    public async Task<ToolCallResult> Call(string tool, object args, bool safety = false)
     {
-        var json = JsonSerializer.Serialize(args, McpProtocol.JsonOptions);
-        var element = JsonSerializer.Deserialize<JsonElement>(json);
-        var result = await tool.ExecuteAsync(element);
-        return result.Content.FirstOrDefault()?.Text ?? "";
+        var registry = safety ? SafetyRegistry : FunctionalRegistry;
+        var json = JsonSerializer.Serialize(args);
+        using var doc = JsonDocument.Parse(json);
+        var result = await registry.ExecuteToolAsync(tool, doc.RootElement.Clone());
+        return ParseResult(result);
+    }
+
+    /// <summary>
+    /// Call an MCP tool through the registry in the given graph.
+    /// </summary>
+    public async Task<ToolCallResult> Call(string tool, object args, ToolRegistry registry)
+    {
+        var json = JsonSerializer.Serialize(args);
+        using var doc = JsonDocument.Parse(json);
+        var result = await registry.ExecuteToolAsync(tool, doc.RootElement.Clone());
+        return ParseResult(result);
+    }
+
+    private static ToolCallResult ParseResult(McpToolResult result)
+    {
+        JsonNode? header = null;
+        string? untrusted = null;
+        byte[]? png = null;
+        string? raw = null;
+
+        foreach (var content in result.Content)
+        {
+            if (content.Type == "text" && content.Text is { } text)
+            {
+                if (header == null && text.TrimStart().StartsWith('{'))
+                {
+                    try
+                    {
+                        header = JsonNode.Parse(text);
+                    }
+                    catch
+                    {
+                        header = null;
+                    }
+                }
+                if (text.TrimStart().StartsWith("<untrusted_screen_text>"))
+                {
+                    untrusted = text
+                        .TrimStart()
+                        .Replace("<untrusted_screen_text>", "")
+                        .Replace("</untrusted_screen_text>", "")
+                        .Trim();
+                }
+            }
+            if (content.Type == "image" && content.Data is { } data)
+            {
+                try
+                {
+                    png = Convert.FromBase64String(data);
+                }
+                catch
+                {
+                    png = null;
+                }
+            }
+        }
+        if (header == null && untrusted == null && png == null)
+        {
+            var first = result.Content.FirstOrDefault(c => c.Type == "text" && c.Text is { } t)?.Text;
+            raw = first ?? result.Content.FirstOrDefault(c => c.Type == "image")?.Data;
+        }
+        return new ToolCallResult(header, untrusted, result.IsError == true, png, raw);
+    }
+
+    /// <summary>
+    /// Parse a ref like [ref=w1e12] from a snapshot line whose name contains the substring.
+    /// Returns null if nothing matches.
+    /// </summary>
+    public static string? FindRef(string? untrustedTree, string nameSubstring, string? role = null)
+    {
+        if (untrustedTree == null) return null;
+        foreach (var raw in untrustedTree.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (role != null && !line.Contains(role, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!line.Contains(nameSubstring, StringComparison.OrdinalIgnoreCase)) continue;
+            var m = Regex.Match(line, @"\[ref=(w\d+e\d+)\]");
+            if (m.Success) return m.Groups[1].Value;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Parse a ref like [ref=w1e12] from a single snapshot line such as
+    /// - button "Seven" [ref=w1e12] @x,y,wxh.
+    /// </summary>
+    public static string? FindRef(string line)
+    {
+        var m = Regex.Match(line, @"\[ref=(w\d+e\d+)\]");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// Parse the quoted name from a single snapshot line such as
+    /// - button "Seven" [ref=w1e12] @x,y,wxh.
+    /// </summary>
+    public static string? FindName(string line)
+    {
+        var m = Regex.Match(line, @"-?\s+\w+\s+""([^""]+)""");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// Parse a snapshot line like - button "Seven" [ref=w1e12] @x,y,wxh.
+    /// </summary>
+    public static (int x, int y, int w, int h)? Bounds(string line)
+    {
+        var m = Regex.Match(line, @"@(-?\d+),(-?\d+),(-?\d+)x(-?\d+)");
+        if (m.Success)
+        {
+            return (
+                int.Parse(m.Groups[1].Value),
+                int.Parse(m.Groups[2].Value),
+                int.Parse(m.Groups[3].Value),
+                int.Parse(m.Groups[4].Value));
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Parse the full snapshot line for a ref (used by Bounds/FindRef).
+    /// </summary>
+    public static string? FindLine(string? untrustedTree, string nameSubstring, string? role = null)
+    {
+        if (untrustedTree == null) return null;
+        foreach (var raw in untrustedTree.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (role != null && !line.Contains(role, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!line.Contains(nameSubstring, StringComparison.OrdinalIgnoreCase)) continue;
+            if (Regex.IsMatch(line, @"\[ref=w\d+e\d+\]")) return line;
+        }
+        return null;
     }
 
     /// <summary>
@@ -131,54 +352,84 @@ public class TestAppFixture : IAsyncLifetime
     /// </summary>
     public string TakeSnapshot(string handle)
     {
-        var builder = new SnapshotBuilder(Elements);
-        var window = Session.GetWindow(handle)!;
-        return builder.BuildSnapshot(handle, window);
+        var r = Call("windows_snapshot", new { window = handle }).GetAwaiter().GetResult();
+        return r.Untrusted ?? "";
     }
 
     /// <summary>
     /// Find an element ref by name in the snapshot of the given window.
     /// Takes a fresh snapshot each time — use the overload accepting a
-    /// pre-built snapshot when multiple lookups are needed.
+    /// pre-built snapshot when multiple lookups against the same snapshot are needed.
     /// </summary>
     public string? FindRefByName(string handle, string name)
     {
-        var snapshot = TakeSnapshot(handle);
-        return FindRefInSnapshot(snapshot, name);
+        return FindRef(TakeSnapshot(handle), name);
     }
 
     /// <summary>
     /// Find an element ref by name in a pre-built snapshot string.
-    /// Use this when making multiple lookups against the same snapshot.
     /// </summary>
     public static string? FindRefInSnapshot(string snapshot, string name)
     {
-        foreach (var line in snapshot.Split('\n'))
+        return FindRef(snapshot, name);
+    }
+
+    /// <summary>
+    /// Poll for a window whose title contains the substring, up to 20 s.
+    /// </summary>
+    public async Task<WindowInfo?> WaitForWindowAsync(string titleSubstring, int timeoutMs = 20000)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
         {
-            if (line.Contains($"\"{name}\"") && line.Contains("[ref="))
-            {
-                var refStart = line.IndexOf("[ref=") + 5;
-                var refEnd = line.IndexOf("]", refStart);
-                return line[refStart..refEnd];
-            }
+            var info = SafetySession.ListTopLevelWindows().FirstOrDefault(
+                w => w.Title != null && w.Title.Contains(titleSubstring, StringComparison.OrdinalIgnoreCase));
+            if (info != null) return info;
+            await Task.Delay(250);
+        }
+        return null;
+    }
+
+    private static Process LaunchTestApp(string path)
+    {
+        return Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Normal
+        }) ?? throw new Exception($"Could not launch {path}");
+    }
+
+    private static string? FindTestAppPath(string appName)
+    {
+        var exe = appName + ".exe";
+        var baseDir = AppContext.BaseDirectory;
+        var candidates = new[]
+        {
+            Path.Combine(baseDir, "TestApps", appName, exe),
+            Path.Combine(baseDir, exe),
+            Path.Combine(baseDir, "..", "..", "..", "TestApps", appName, "bin", "Debug", "net8.0-windows", exe),
+        };
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate)) return candidate;
         }
         return null;
     }
 
     private static void CloseProcess(Process? process)
     {
-        if (process == null || process.HasExited) return;
         try
         {
-            process.CloseMainWindow();
-            if (!process.WaitForExit(3000))
+            if (process is { HasExited: false })
             {
-                process.Kill();
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
             }
         }
         catch
         {
-            try { process.Kill(); } catch { }
+            // best effort.
         }
     }
 }
