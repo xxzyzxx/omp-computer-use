@@ -249,6 +249,7 @@ internal static class Native
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
     public const uint GW_OWNER = 4;
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
+    [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
 
     /// <summary>
     /// For packaged (UWP/WinUI) apps the top-level HWND belongs to ApplicationFrameHost.exe; the app itself owns the

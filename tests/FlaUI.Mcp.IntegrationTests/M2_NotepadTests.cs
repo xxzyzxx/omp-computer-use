@@ -24,39 +24,35 @@ public class M2_NotepadTests : IDisposable
     [Fact]
     public async Task Notepad_TypeAndSave_WritesFile()
     {
-        _notepad = Process.Start(new ProcessStartInfo
+        // Windows 11 Notepad is single-instance (new launches become tabs): start from a clean slate.
+        foreach (var p in Process.GetProcessesByName("Notepad"))
         {
-            FileName = "notepad.exe",
-            UseShellExecute = true
-        }) ?? throw new Exception("Could not launch notepad.exe");
+            try { p.Kill(); p.WaitForExit(3000); } catch { /* best effort */ }
+        }
 
-        var info = await _f.WaitForWindowAsync("Notepad");
-        Assert.NotNull(info);
+        var launch = await _f.Call("windows_launch", new { app = "notepad.exe" });
+        Assert.False(launch.IsError, $"windows_launch failed: {launch.RawText}");
+        var handle = launch.Header!["window"]!["handle"]!.GetValue<string>();
+        var info = _f.FunctionalSession.ResolveWindow(handle);
+        _notepad = Process.GetProcessById((int)info.Pid);
 
-        var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
+        var snap = await _f.Call("windows_snapshot", new { window = handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
 
-        // The document ref (or textbox ref) — the Notepad document is a TextBox named "Text Editor" or similar.
-        var docRef = TestAppFixture.FindRef(snap.Untrusted, "Text Editor", "textbox")
+        // Windows 11 Notepad exposes the editor as a document named "Text editor"; classic Notepad as an edit box.
+        var docRef = TestAppFixture.FindRef(snap.Untrusted, "Text editor")
                     ?? TestAppFixture.FindRef(snap.Untrusted, "Text", "textbox");
-        if (docRef == null)
-        {
-            // Fall back to the window itself: focus the window and type without a ref.
-            var focus = await _f.Call("windows_focus", new { window = info!.Handle });
-            Assert.False(focus.IsError, $"windows_focus failed: {focus.RawText}");
-        }
-        else
-        {
-            var type = await _f.Call("windows_type", new Dictionary<string, object?> { ["ref"] = docRef, ["text"] = "hello from mcp" });
-            Assert.False(type.IsError, $"windows_type failed: {type.RawText}");
-        }
+        Assert.NotNull(docRef);
+
+        var type = await _f.Call("windows_type", new Dictionary<string, object?> { ["ref"] = docRef, ["text"] = "hello from mcp" });
+        Assert.False(type.IsError, $"windows_type failed: {type.RawText}");
 
         // Ctrl+S opens the Save As dialog.
-        var save = await _f.Call("windows_key", new { keys = "ctrl+s" });
+        var save = await _f.Call("windows_key", new { keys = "ctrl+s", window = handle });
         Assert.False(save.IsError, $"windows_key failed: {save.RawText}");
 
-        // Wait for the Save As dialog.
-        var dialog = await _f.WaitForWindowAsync("Save As");
+        // Wait for the Save As dialog (an owned window of the Notepad process).
+        var dialog = await _f.WaitForWindowAsync("Save as", processName: "Notepad.exe");
         Assert.NotNull(dialog);
 
         // Fill the filename field.
@@ -69,12 +65,12 @@ public class M2_NotepadTests : IDisposable
         Assert.False(fill.IsError, $"windows_fill failed: {fill.RawText}");
 
         // Press Enter to confirm the save.
-        var enter = await _f.Call("windows_key", new { keys = "enter" });
+        var enter = await _f.Call("windows_key", new { keys = "enter", window = dialog.Handle });
         Assert.False(enter.IsError, $"windows_key failed: {enter.RawText}");
 
         // Wait for the dialog to be gone.
-        var gone = await _f.WaitForWindowAsync("Save As", timeoutMs: 20000);
-        Assert.Null(gone);
+        var gone = await _f.WaitForWindowGoneAsync(dialog.Hwnd, 20000);
+        Assert.True(gone, "Save As dialog did not close");
 
         // Assert the file exists with the expected content.
         var sw = Stopwatch.StartNew();

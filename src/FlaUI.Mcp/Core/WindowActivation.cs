@@ -17,9 +17,10 @@ public static class WindowActivation
     }
 
     /// <summary>
-    /// Restores a minimized window, then brings <paramref name="window"/> to the foreground: AllowSetForegroundWindow,
-    /// AttachThreadInput between this thread and the foreground window's thread, SetForegroundWindow + BringWindowToTop,
-    /// detach, then poll up to 1 s. False when the window still is not in the foreground.
+    /// Restores a minimized window, then brings <paramref name="window"/> to the foreground, escalating through the
+    /// ways Windows allows a process to take the foreground: AllowSetForegroundWindow + AttachThreadInput to the
+    /// current foreground thread + SetForegroundWindow; then a synthetic ALT tap (this process becomes the last
+    /// input sender) + SetForegroundWindow; then SwitchToThisWindow. False when the window still is not in front.
     /// </summary>
     public static bool BringToForeground(WindowInfo window)
     {
@@ -32,8 +33,33 @@ public static class WindowActivation
         {
             Native.ShowWindow(hwnd, Native.SW_RESTORE);
         }
-        Native.AllowSetForegroundWindow((uint)Environment.ProcessId);
+        if (IsForegroundRoot(hwnd))
+        {
+            return true;
+        }
 
+        Native.AllowSetForegroundWindow((uint)Environment.ProcessId);
+        if (TryActivateWithAttachedInput(hwnd) && WaitForeground(hwnd, 400))
+        {
+            return true;
+        }
+
+        // A synthetic key press makes this process the last input sender, which unlocks SetForegroundWindow.
+        FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.ALT);
+        FlaUI.Core.Input.Keyboard.Release(FlaUI.Core.WindowsAPI.VirtualKeyShort.ALT);
+        Native.SetForegroundWindow(hwnd);
+        Native.BringWindowToTop(hwnd);
+        if (WaitForeground(hwnd, 400))
+        {
+            return true;
+        }
+
+        Native.SwitchToThisWindow(hwnd, true);
+        return WaitForeground(hwnd, 600);
+    }
+
+    private static bool TryActivateWithAttachedInput(IntPtr hwnd)
+    {
         var fg = Native.GetForegroundWindow();
         var fgThread = fg != IntPtr.Zero ? Native.GetWindowThreadProcessId(fg, out _) : 0;
         var ourThread = Native.GetCurrentThreadId();
@@ -45,7 +71,7 @@ public static class WindowActivation
                 attached = Native.AttachThreadInput(ourThread, fgThread, true);
             }
             Native.BringWindowToTop(hwnd);
-            Native.SetForegroundWindow(hwnd);
+            return Native.SetForegroundWindow(hwnd);
         }
         finally
         {
@@ -54,9 +80,12 @@ public static class WindowActivation
                 Native.AttachThreadInput(ourThread, fgThread, false);
             }
         }
+    }
 
+    private static bool WaitForeground(IntPtr hwnd, int timeoutMs)
+    {
         var sw = Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < 1000)
+        while (sw.ElapsedMilliseconds < timeoutMs)
         {
             if (IsForegroundRoot(hwnd))
             {

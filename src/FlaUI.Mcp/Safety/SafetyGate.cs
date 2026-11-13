@@ -95,6 +95,8 @@ public sealed class SafetyGate
         if (root == IntPtr.Zero) root = fg;
         if (root == target.Hwnd || fg == target.Hwnd) return;
         var fgPid = Native.GetWindowProcessId(root);
+        var hosted = Native.GetHostedAppProcessId(root);
+        if (hosted != 0) fgPid = hosted;
         if (fgPid == target.Pid) return;
         var title = Native.GetWindowText(root);
         var exe = Native.GetProcessExeName(fgPid) ?? $"pid {fgPid}";

@@ -143,7 +143,7 @@ public class SessionManager : IDisposable
         foreach (var hwnd in Native.TopLevelWindows())
         {
             if (hwnd == shell || !Native.IsWindowVisible(hwnd) || Native.IsCloaked(hwnd)) continue;
-            if (Native.GetWindow(hwnd, Native.GW_OWNER) != IntPtr.Zero) continue;
+            // Owned windows stay: dialogs (Save As, message boxes) are owned by their main window.
             var ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
             if ((ex & Native.WS_EX_TOOLWINDOW) != 0) continue;
             var minimized = Native.IsIconic(hwnd);
@@ -295,10 +295,19 @@ public class SessionManager : IDisposable
         {
             process = Process.Start(psi);
         }
-        catch (Exception ex)
+        catch (Exception first)
         {
-            throw new ToolException("launch_failed", $"Failed to start {app}: {ex.Message}",
-                "Check the path/name; for Store apps pass the AUMID (e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe!App).");
+            // Shell/protocol activation fails transiently while a previous instance of the app is shutting down.
+            Thread.Sleep(750);
+            try
+            {
+                process = Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                throw new ToolException("launch_failed", $"Failed to start {app}: {ex.Message} (first attempt: {first.Message})",
+                    "Check the path/name; for Store apps pass the AUMID (e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe!App).");
+            }
         }
 
         var launchedPid = process != null && !isAumid ? (uint)process.Id : 0u;

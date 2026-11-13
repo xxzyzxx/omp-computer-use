@@ -1,43 +1,32 @@
 using System.Diagnostics;
-using FlaUI.Mcp.IntegrationTests;
 
 namespace FlaUI.Mcp.IntegrationTests;
 
 /// <summary>
-/// M2 — Settings budget: launch the Settings app, snapshot with defaults, assert the
-/// untrusted text is bounded by SnapshotMaxChars and the header reports nodes/elapsed_ms.
-/// Snapshot with a filter returns fewer nodes.
+/// M2 — Settings app snapshot budget: a complex XAML app's snapshot stays within the configured
+/// character budget, is fast, and filter= narrows it.
 /// </summary>
 [Collection("TestApps")]
 public class M2_SettingsBudgetTests : IDisposable
 {
     private readonly TestAppFixture _f;
-    private Process? _settings;
+    private uint _settingsPid;
 
     public M2_SettingsBudgetTests(TestAppFixture fixture) => _f = fixture;
 
     [Fact]
     public async Task Settings_SnapshotDefaults_Budget()
     {
-        _settings = Process.Start(new ProcessStartInfo
-        {
-            FileName = "ms-settings:",
-            UseShellExecute = true
-        }) ?? throw new Exception("Could not launch ms-settings:");
+        var handle = await LaunchSettingsAsync();
 
-        var info = await _f.WaitForWindowAsync("Settings");
-        Assert.NotNull(info);
-
-        var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
+        var snap = await _f.Call("windows_snapshot", new { window = handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
         Assert.NotNull(snap.Header);
         Assert.NotNull(snap.Untrusted);
 
-        // Assert the untrusted text is bounded.
-        var maxChars = (int?)_f.FunctionalConfig.SnapshotMaxChars ?? 24000;
-        Assert.True(
-            snap.Untrusted!.Length <= maxChars,
-            $"Snapshot text is too long: {snap.Untrusted.Length} > {maxChars}");
+        // The untrusted text is bounded by the configured budget (truncation is reported in the header).
+        var maxChars = _f.FunctionalConfig.SnapshotMaxChars;
+        Assert.True(snap.Untrusted!.Length <= maxChars, $"Snapshot text is too long: {snap.Untrusted.Length} > {maxChars}");
 
         var nodes = (int?)snap.Header!["nodes"];
         Assert.True(nodes > 20, $"Snapshot nodes: {nodes} is too small.");
@@ -49,44 +38,52 @@ public class M2_SettingsBudgetTests : IDisposable
     [Fact]
     public async Task Settings_SnapshotFilteredBluetooth_FewerNodes()
     {
-        _settings = Process.Start(new ProcessStartInfo
-        {
-            FileName = "ms-settings:",
-            UseShellExecute = true
-        }) ?? throw new Exception("Could not launch ms-settings:");
+        var handle = await LaunchSettingsAsync();
 
-        var info = await _f.WaitForWindowAsync("Settings");
-        Assert.NotNull(info);
-
-        var snap = await _f.Call("windows_snapshot", new { window = info!.Handle });
+        var snap = await _f.Call("windows_snapshot", new { window = handle });
         Assert.False(snap.IsError, $"windows_snapshot failed: {snap.RawText}");
         var nodesAll = (int?)snap.Header!["nodes"];
 
         var filtered = await _f.Call("windows_snapshot", new Dictionary<string, object?>
         {
-            ["window"] = info!.Handle,
+            ["window"] = handle,
             ["filter"] = "Bluetooth"
         });
         Assert.False(filtered.IsError, $"windows_snapshot failed: {filtered.RawText}");
         var nodesFiltered = (int?)filtered.Header!["nodes"];
+        Assert.Equal(true, (bool?)filtered.Header!["filtered"]);
 
         Assert.NotNull(nodesAll);
         Assert.NotNull(nodesFiltered);
         Assert.True(nodesFiltered < nodesAll, $"Filtered nodes: {nodesFiltered} is not fewer than {nodesAll}.");
     }
 
+    /// <summary>ms-settings: is a protocol launch (no process handle), so the server's launch + window diff is used.</summary>
+    private async Task<string> LaunchSettingsAsync()
+    {
+        var launch = await _f.Call("windows_launch", new { app = "ms-settings:" });
+        Assert.False(launch.IsError, $"windows_launch failed: {launch.RawText}");
+        var handle = launch.Header!["window"]!["handle"]!.GetValue<string>();
+        var info = _f.FunctionalSession.ResolveWindow(handle);
+        Assert.Equal("SystemSettings.exe", info.ProcessName);
+        _settingsPid = info.Pid;
+        // Home page content (the search box) marks the end of the splash phase.
+        Assert.True(await _f.WaitForElementAsync(handle, "Find a setting"), "Settings content did not load");
+        return handle;
+    }
+
     public void Dispose()
     {
+        if (_settingsPid == 0) return;
         try
         {
-            if (_settings is { HasExited: false })
-            {
-                _settings.Kill(entireProcessTree: true);
-            }
+            var p = Process.GetProcessById((int)_settingsPid);
+            p.Kill();
+            p.WaitForExit(5000);
         }
         catch
         {
-            // best effort.
+            // Already gone.
         }
     }
 }
