@@ -91,22 +91,35 @@ public sealed class FocusTool : ToolBase
         "Brings a window to the foreground (restores it first when minimized). window is a handle (\"w3\"), hwnd, " +
         "\"pid:N\", title substring or process name (default foreground). Returns { ok, window, foreground } — " +
         "foreground=false fails with focus_lost. Call this before windows_type/windows_key when the target may " +
-        "not be in front.";
+        "not be in front. state=\"maximized\" also maximizes the window (e.g. a game right after it launches).";
 
     public override object InputSchema => new
     {
         type = "object",
         properties = new
         {
-            window = new { type = "string", description = "Window handle (\"w3\"), hwnd, pid:N, title substring or process name (default foreground)" }
+            window = new { type = "string", description = "Window handle (\"w3\"), hwnd, pid:N, title substring or process name (default foreground)" },
+            state = new { type = "string", @enum = new[] { "maximized" }, description = "Optional: also maximize the window" }
         }
     };
 
     public override async Task<McpToolResult> ExecuteAsync(JsonElement? arguments, ToolContext ctx)
     {
         var window = _s.Session.ResolveWindow(GetStringArgument(arguments, "window"));
+        var state = GetStringArgument(arguments, "state");
+        if (state != null && !string.Equals(state, "maximized", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ToolException("bad_request", $"Unknown state '{state}'.", "Omit state, or pass state=\"maximized\".");
+        }
         await ctx.Gate.EnsureControlAsync(window, ctx);
         ctx.ThrowIfCancelled();
+
+        if (state != null && !Native.IsZoomed(window.Hwnd))
+        {
+            Native.ShowWindow(window.Hwnd, Native.SW_MAXIMIZE);
+            await Task.Delay(150, ctx.Cancel);
+            window = _s.Session.TryGetWindowInfo(window.Hwnd) ?? window;
+        }
 
         if (!WindowActivation.BringToForeground(window))
         {
@@ -115,7 +128,7 @@ public sealed class FocusTool : ToolBase
                 "Retry once; if it still fails, ask the user to click the window, then windows_snapshot it to continue.");
         }
 
-        return JsonResult(new { ok = true, window = window.ToJson(), foreground = true });
+        return JsonResult(new { ok = true, window = window.ToJson(), foreground = true, maximized = Native.IsZoomed(window.Hwnd) });
     }
 }
 

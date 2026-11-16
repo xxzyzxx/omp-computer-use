@@ -22,7 +22,7 @@ public sealed class SafetyGate
         {
             try
             {
-                if (active) Overlay.Show(app);
+                if (active && !Config.IsOverlaySuppressedFor(app)) Overlay.Show(app);
                 else Overlay.Hide();
             }
             catch (Exception ex)

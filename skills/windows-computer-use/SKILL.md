@@ -137,6 +137,51 @@ overlay; it does not revoke grants or change the user-idle timer. If the run was
 paused by `user_active` and the user says "go ahead", `windows_resume` marks the
 user idle so actions can proceed.
 
+## Game mode (only for configured game windows)
+
+If the user configured `gameProfiles`, windows that match are games: no UIA tree, and
+ordinary key/mouse injection does not reach them. Everything else — the launcher,
+dialogs, files — stays on the rules above. `windows_game_status` tells you which path
+applies right now (`mode: "desktop"` or `"game"`).
+
+```
+launcher (snapshot/click as usual) → start the game
+windows_game_status                                   → wait until a game window is listed
+windows_focus      { "window": "w7", "state": "maximized" }
+windows_screenshot { "window": "w7" }                 → look (client area of the game)
+windows_game_input { "events": [...], "screenshot": true }
+...
+windows_close      { "window": "w7" }                 → then back to the launcher / files
+```
+
+`windows_game_input` runs a timed sequence inside the server, so put a whole
+manoeuvre in one call instead of one event per call:
+
+```json
+{"events": [
+  {"do": "key_down", "key": "w"},
+  {"do": "mouse_move", "dx": 400, "dy": 0, "ms": 300},
+  {"do": "wait", "ms": 1500},
+  {"do": "key_up", "key": "w"},
+  {"do": "click", "button": "right"}
+], "screenshot": true}
+```
+
+- `mouse_move {dx, dy}` is relative: it turns the camera while the game holds the
+  cursor. `mouse_to {x, y}` is absolute in pixels of the latest screenshot: use it
+  where a cursor is visible (menus, inventory), followed by `click`.
+- Keys are physical names (`w`, `space`, `esc`, `shift`, `f3`, `1`…). `text` types
+  into an in-game text box that is already open.
+- No snapshot, refs, marks or `windows_wait stable` on a game: use `wait` events,
+  then a screenshot, and verify from the picture.
+- Held keys are released at the end of the call unless `keep_held: true`; call
+  `{"release_all": true}` if unsure.
+- `status: game_exited`, or a process with `exitCode` in `windows_game_status`, means
+  the game is gone: return to the desktop tools. Crash details are in the game's own
+  log files — read them with file tools, not the GUI.
+- `not_game_window` means you aimed game input at an ordinary window: use
+  `windows_click` / `windows_key` there instead.
+
 ## YOLO mode
 
 YOLO is never on by default; only the user enables it by starting the server with

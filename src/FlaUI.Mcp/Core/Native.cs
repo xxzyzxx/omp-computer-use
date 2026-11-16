@@ -73,6 +73,7 @@ internal static class Native
     public const int SW_RESTORE = 9;
     public const int SW_SHOW = 5;
     public const int SW_MINIMIZE = 6;
+    public const int SW_MAXIMIZE = 3;
     public const uint GA_ROOT = 2;
     public const uint PW_RENDERFULLCONTENT = 0x00000002;
     public const uint MONITOR_DEFAULTTONEAREST = 2;
@@ -107,6 +108,8 @@ internal static class Native
 
     [DllImport("user32.dll", SetLastError = true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+    [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);

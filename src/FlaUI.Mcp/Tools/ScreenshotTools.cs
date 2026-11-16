@@ -192,11 +192,14 @@ public sealed class ScreenshotTool : ToolBase
             window = _s.Session.ResolveWindow(windowSpec);
             ctx.Gate.EnsureView(window);
             ctx.TargetApp = window.ProcessName;
-            captured = ScreenCapture.Window(window);
+            // Game windows (config gameProfiles) are copied from the screen while they are in front:
+            // PrintWindow returns blank or stale frames for OpenGL/DirectX surfaces. Null = not a game window
+            // (or not in front), so every other window keeps the PrintWindow path.
+            captured = GameCapture.TryClientArea(_s.Config, window) ?? ScreenCapture.Window(window);
             physical = captured.Physical;
             monitorId = Monitors.ForWindow(window.Hwnd)?.Id ?? 0;
             frameWindow = window.Handle;
-            if (captured.Method == "bitblt-fallback" && !_s.Config.IsBlockedAppsAllowed)
+            if (captured.Method is ("bitblt-fallback" or GameCapture.Method) && !_s.Config.IsBlockedAppsAllowed)
             {
                 // PrintWindow failed, so the pixels are a screen copy that may show overlapping blocked apps.
                 redacted = ScreenshotTools.RedactBlocked(_s, captured.Bitmap, captured.Physical);
@@ -475,8 +478,8 @@ public sealed class ZoomTool : ToolBase
         ScreenCapture.Captured captured;
         if (sourceWindow != null)
         {
-            captured = ScreenCapture.Crop(ScreenCapture.Window(sourceWindow), physical);
-            if (captured.Method == "bitblt-fallback" && !_s.Config.IsBlockedAppsAllowed)
+            captured = ScreenCapture.Crop(GameCapture.TryClientArea(_s.Config, sourceWindow) ?? ScreenCapture.Window(sourceWindow), physical);
+            if (captured.Method is ("bitblt-fallback" or GameCapture.Method) && !_s.Config.IsBlockedAppsAllowed)
             {
                 // PrintWindow failed, so the pixels are a screen copy that may show overlapping blocked apps.
                 redacted = ScreenshotTools.RedactBlocked(_s, captured.Bitmap, captured.Physical);
