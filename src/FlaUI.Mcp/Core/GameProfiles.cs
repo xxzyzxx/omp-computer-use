@@ -23,7 +23,11 @@ public sealed class GameProfile
     [JsonPropertyName("title")]
     public string? Title { get; set; }
 
-    /// <summary>Optional case-insensitive regex over the Win32 window class (e.g. "^GLFW30$").</summary>
+    /// <summary>
+    /// Optional case-insensitive regex over the Win32 window class, e.g. "^GLFW30$" or "^SDL_app$". The class
+    /// depends on the windowing library the game build ships, not on the game: read it from the running window
+    /// (windows_game_status lists it for unmatched candidates) instead of assuming one.
+    /// </summary>
     [JsonPropertyName("windowClass")]
     public string? WindowClass { get; set; }
 
@@ -59,12 +63,27 @@ public sealed class GameProfile
     }
 
     public bool Matches(string? processName, string? title, string? className)
+        => MatchFailures(processName, title, className) is { Count: 0 };
+
+    /// <summary>
+    /// Why a window of this profile's process is not this profile's game: one entry per failed title/class
+    /// constraint, naming the window's actual value. Empty = the window matches. Null = the profile does not
+    /// apply at all (other process, or the profile itself is unusable).
+    /// </summary>
+    public IReadOnlyList<string>? MatchFailures(string? processName, string? title, string? className)
     {
         Compile();
-        if (_error != null || !ProcessMatches(processName)) return false;
-        if (_title != null && !_title.IsMatch(title ?? "")) return false;
-        if (_class != null && !_class.IsMatch(className ?? "")) return false;
-        return true;
+        if (_error != null || !ProcessMatches(processName)) return null;
+        var failed = new List<string>();
+        if (_title != null && !_title.IsMatch(title ?? ""))
+        {
+            failed.Add($"title \"{title}\" does not match /{Title}/");
+        }
+        if (_class != null && !_class.IsMatch(className ?? ""))
+        {
+            failed.Add($"windowClass \"{className}\" does not match /{WindowClass}/");
+        }
+        return failed;
     }
 
     public bool ProcessMatches(string? processName)

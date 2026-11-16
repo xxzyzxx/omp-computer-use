@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-profile `overlay` and `ignoreMouseMoveYield` options.
 - `windows_focus` accepts `state: "maximized"`.
 
+### Fixed
+- `windows_game_status` no longer says no game is open when a window of a profiled process is running but fails a profile's title/class constraint (GT: New Horizons 2.9.0 is `javaw.exe` with class `SDL_app`, not `GLFW30`). It reports `detection: "candidate_unmatched"` and lists such windows under `candidates` with their actual Win32 class and the failed conditions; `windows_game_input` refuses them with `game_profile_mismatch`. Candidates are diagnostics only. Docs no longer present `GLFW30` as the class of every Minecraft window.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

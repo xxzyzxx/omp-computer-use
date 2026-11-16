@@ -77,6 +77,60 @@ public class GameModeTests
         Assert.Null(config.MatchGame("notepad.exe", "Untitled - Notepad", "Notepad"));
     }
 
+    // ----- detection diagnostics -----
+
+    private static ServerConfig MinecraftAndGtnh() => new()
+    {
+        GameProfiles =
+        {
+            Minecraft(),
+            new GameProfile { Name = "gtnh", Process = "javaw.exe", Title = "^GT: New Horizons", WindowClass = "^SDL_app$" }
+        }
+    };
+
+    [Theory]
+    [InlineData("GT: New Horizons 2.9.0", "SDL_app", "gtnh")]
+    [InlineData("COBBLEVERSE", "GLFW30", "minecraft")]
+    [InlineData("Java Control Panel", "SunAwtFrame", null)]
+    [InlineData("Some Other SDL Java App", "SDL_app", null)]
+    public void Config_EachWindowLandsOnItsOwnProfile(string title, string windowClass, string? expected)
+    {
+        Assert.Equal(expected, MinecraftAndGtnh().MatchGame("javaw.exe", title, windowClass)?.DisplayName);
+    }
+
+    [Fact]
+    public void NearMisses_NameTheActualClassAndTheFailedConstraint()
+    {
+        var config = new ServerConfig { GameProfiles = { Minecraft() } };
+        var miss = Assert.Single(config.NearMisses("javaw.exe", "GT: New Horizons 2.9.0", "SDL_app"));
+        Assert.Equal("minecraft", miss.Profile.DisplayName);
+        var failed = Assert.Single(miss.Failed);
+        Assert.Contains("windowClass", failed);
+        Assert.Contains("SDL_app", failed);
+        Assert.Contains("^GLFW30$", failed);
+    }
+
+    [Fact]
+    public void NearMisses_ListEveryFailedConstraintPerProfile()
+    {
+        var misses = MinecraftAndGtnh().NearMisses("javaw.exe", "Java Control Panel", "SunAwtFrame");
+        Assert.Equal(new[] { "minecraft", "gtnh" }, misses.Select(m => m.Profile.DisplayName));
+        Assert.Single(misses[0].Failed);
+        Assert.Equal(2, misses[1].Failed.Count);
+    }
+
+    [Fact]
+    public void NearMisses_EmptyForMatchedWindowsOtherProcessesAndUnusableProfiles()
+    {
+        var config = MinecraftAndGtnh();
+        Assert.Empty(config.NearMisses("javaw.exe", "GT: New Horizons 2.9.0", "SDL_app"));
+        Assert.Empty(config.NearMisses("notepad.exe", "Untitled - Notepad", "Notepad"));
+        Assert.Empty(config.NearMisses(null, "GT: New Horizons 2.9.0", "SDL_app"));
+
+        var broken = new ServerConfig { GameProfiles = { new GameProfile { Process = "javaw.exe", WindowClass = "([" } } };
+        Assert.Empty(broken.NearMisses("javaw.exe", "Minecraft", "GLFW30"));
+    }
+
     // ----- scan codes -----
 
     [Theory]

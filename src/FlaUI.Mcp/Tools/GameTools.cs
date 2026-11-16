@@ -31,6 +31,38 @@ public static class GameTools
         return result;
     }
 
+    internal const string FixProfile =
+        "If one of these is the game, do NOT drive it with windows_click/windows_key: fix gameProfiles in config.json " +
+        "(set windowClass/title to match the actual values shown, or add a profile for them), restart the MCP server " +
+        "(config is read at startup only), then call windows_game_status again. If none is the game, ignore them.";
+
+    /// <summary>
+    /// Open windows of a profiled process that no profile accepts, with the constraints that failed.
+    /// Informational only: nothing here is a game window, so game input and game capture still refuse them.
+    /// </summary>
+    internal static List<object> Candidates(Services s)
+    {
+        var result = new List<object>();
+        if (s.Config.GameProfiles.Count == 0) return result;
+        foreach (var window in s.Session.ListTopLevelWindows())
+        {
+            var misses = s.Config.NearMisses(window.ProcessName, window.Title, window.ClassName);
+            if (misses.Count > 0) result.Add(DescribeCandidate(window, misses));
+        }
+        return result;
+    }
+
+    internal static object DescribeCandidate(WindowInfo window, List<(GameProfile Profile, IReadOnlyList<string> Failed)> misses) => new
+    {
+        handle = window.Handle,
+        title = window.Title,
+        process = window.ProcessName,
+        pid = window.Pid,
+        windowClass = window.ClassName,
+        foreground = WindowActivation.IsForeground(window),
+        profiles = misses.Select(m => new { profile = m.Profile.DisplayName, failed = m.Failed })
+    };
+
     internal static object Describe(WindowInfo window, GameProfile profile)
     {
         var client = GameCapture.ClientRectOnScreen(window.Hwnd);
@@ -71,11 +103,15 @@ public sealed class GameStatusTool : ToolBase
     public override ToolKind Kind => ToolKind.Control;
 
     public override string Description =>
-        "Game mode status. Lists open game windows (windows matching a gameProfiles entry in config.json): handle, " +
-        "pid, foreground, maximized, responding (false = hung), client size. mode is \"game\" when a game window " +
-        "is in front (use windows_game_input + windows_screenshot) and \"desktop\" otherwise (use the normal " +
-        "windows_* tools). processes reports every game process seen this session with running and, once it has " +
-        "ended, exitCode — call this to learn whether the game is still up, hung, closed cleanly or crashed. " +
+        "Game mode status. Call it after launching a game and before any gameplay input. games lists open game " +
+        "windows (windows matching a gameProfiles entry in config.json): handle, pid, foreground, maximized, " +
+        "responding (false = hung), client size. mode is \"game\" when a game window is in front (use " +
+        "windows_game_input + windows_screenshot) and \"desktop\" otherwise. detection is \"matched\", \"none\" (no " +
+        "window of any profiled process is open) or \"candidate_unmatched\": candidates lists open windows whose " +
+        "process matches a profile but whose title/windowClass constraint failed, with the actual Win32 windowClass " +
+        "and the failed conditions — the game is probably running under a profile that does not fit it; fix the " +
+        "profile and restart the server rather than playing through desktop input. Candidates are not game windows. " +
+        "processes reports every game process seen this session with running and, once it has ended, exitCode. " +
         "held lists keys/buttons the game path is still holding down.";
 
     public override object InputSchema => new { type = "object", properties = new { } };
@@ -93,7 +129,8 @@ public sealed class GameStatusTool : ToolBase
                 mode = "desktop",
                 configured = false,
                 note = "No gameProfiles are configured, so game mode is off. Add an entry to config.json, e.g. " +
-                       "{\"name\":\"minecraft\",\"process\":\"javaw.exe\",\"windowClass\":\"^GLFW30$\"}, then reload the MCP server."
+                       "{\"name\":\"minecraft\",\"process\":\"javaw.exe\",\"windowClass\":\"^GLFW30$\"} (use the game " +
+                       "window's actual Win32 class; it varies by build), then restart the MCP server."
             }));
         }
 
@@ -102,11 +139,15 @@ public sealed class GameStatusTool : ToolBase
         {
             _tracker.Observe(window, profile);
         }
+        var candidates = GameTools.Candidates(_s);
         var front = games.FirstOrDefault(g => WindowActivation.IsForeground(g.Window));
         var (keys, buttons) = GameInput.Held();
         var mode = front.Window != null ? "game" : "desktop";
+        var detection = games.Count > 0 ? "matched" : candidates.Count > 0 ? "candidate_unmatched" : "none";
         var next = games.Count == 0
-            ? "No game window is open: use the normal windows_* tools (launcher, files), then call windows_game_status again."
+            ? candidates.Count > 0
+                ? "No window matches a game profile, but candidates lists open windows of a profiled process that failed a title/windowClass constraint. " + GameTools.FixProfile
+                : "No window of any profiled game process is open: use the normal windows_* tools (launcher, files), then call windows_game_status again."
             : front.Window != null
                 ? "A game window is in front: drive it with windows_game_input and look with windows_screenshot window=<handle>."
                 : "A game window exists but is not in front: windows_focus it (state=\"maximized\" to maximize), then use windows_game_input.";
@@ -115,9 +156,11 @@ public sealed class GameStatusTool : ToolBase
         {
             ok = true,
             mode,
+            detection,
             configured = true,
             profiles = profiles.Select(p => new { name = p.DisplayName, process = p.Process, title = p.Title, windowClass = p.WindowClass, usable = p.Validate() == null }),
             games = games.Select(g => GameTools.Describe(g.Window, g.Profile)),
+            candidates,
             processes = _tracker.Report(),
             held = new { keys, buttons },
             next
@@ -303,7 +346,17 @@ public sealed class GameInputTool : ToolBase
             var games = GameTools.OpenGames(_s);
             if (games.Count == 0)
             {
-                throw new ToolException("no_game_window", "No game window is open.",
+                var candidates = GameTools.Candidates(_s);
+                if (candidates.Count > 0)
+                {
+                    throw new ToolException("game_profile_mismatch",
+                        "No window matches a game profile, but a window of a profiled process is open and failed a title/windowClass constraint.",
+                        GameTools.FixProfile)
+                    {
+                        Payload = new { candidates }
+                    };
+                }
+                throw new ToolException("no_game_window", "No window of any profiled game process is open.",
                     "Start the game with the normal windows_* tools (launcher), wait for its window, then call windows_game_status.");
             }
             return games[0];
@@ -313,6 +366,16 @@ public sealed class GameInputTool : ToolBase
         var profile = _s.Config.MatchGame(window);
         if (profile == null)
         {
+            var misses = _s.Config.NearMisses(window.ProcessName, window.Title, window.ClassName);
+            if (misses.Count > 0)
+            {
+                throw new ToolException("game_profile_mismatch",
+                    $"{window.Handle} (\"{window.Title}\", {window.ProcessName}, class {window.ClassName}) belongs to a profiled process but failed a title/windowClass constraint; game input is only sent to game windows.",
+                    GameTools.FixProfile)
+                {
+                    Payload = new { candidates = new[] { GameTools.DescribeCandidate(window, misses) } }
+                };
+            }
             throw new ToolException("not_game_window",
                 $"{window.Handle} (\"{window.Title}\", {window.ProcessName}) does not match any gameProfiles entry; game input is only sent to game windows.",
                 "Use windows_snapshot / windows_click / windows_key for this window, or call windows_game_status to find the game window.");

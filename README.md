@@ -123,14 +123,27 @@ windows; it is off until you add a profile, and it never applies to any other wi
 ```jsonc
 // %LOCALAPPDATA%\WindowsComputerUse\config.json
 "gameProfiles": [
-  { "name": "minecraft", "process": "javaw.exe", "windowClass": "^GLFW30$" }
+  { "name": "minecraft", "process": "javaw.exe", "windowClass": "^GLFW30$" },
+  { "name": "gtnh", "process": "javaw.exe", "title": "^GT: New Horizons", "windowClass": "^SDL_app$" }
 ]
 ```
 
 A window is a game window when its process matches and, if given, its `title` and
-`windowClass` regexes match. For Minecraft Java the game window is `javaw.exe` with
-class `GLFW30`; matching the class keeps other Java windows (launcher consoles,
-installers) on the normal path, and still works when a modpack renames the title.
+`windowClass` regexes match; the first matching profile wins. Matching the class
+keeps other Java windows (launcher consoles, installers) on the normal path.
+
+The window class comes from the windowing library a particular build ships, not from
+the game, so read it from the running window instead of assuming it. Minecraft Java is
+always `javaw.exe`, but the class differs: `GLFW30` on the modern builds tested here,
+`SDL_app` on GT: New Horizons 2.9.0. When a profile's process matches an open window
+but a constraint fails, `windows_game_status` reports `detection:
+"candidate_unmatched"` and lists the window under `candidates` with its actual
+`windowClass` and the failed conditions; `windows_game_input` refuses it with
+`game_profile_mismatch`. Candidates are diagnostics only and never receive game input.
+
+`config.json` is read once at startup. After editing `gameProfiles`, restart the MCP
+server (end the `FlaUI.Mcp.exe` process or reload it in the harness) and confirm with
+`windows_game_status`; an edit on disk alone changes nothing.
 
 The intended loop, with Minecraft as the example:
 
