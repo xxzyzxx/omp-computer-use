@@ -146,6 +146,21 @@ public sealed class ServerConfig
 
     public GameProfile? MatchGame(WindowInfo window) => MatchGame(window.ProcessName, window.Title, window.ClassName);
 
+    /// <summary>
+    /// Profiles whose process matches a window that no profile accepts, each with the constraints that failed.
+    /// Diagnostic only: a window listed here is not a game window and gets no game input or game capture.
+    /// </summary>
+    public List<(GameProfile Profile, IReadOnlyList<string> Failed)> NearMisses(string? processName, string? title, string? className)
+    {
+        var result = new List<(GameProfile, IReadOnlyList<string>)>();
+        if (MatchGame(processName, title, className) != null) return result;
+        foreach (var profile in GameProfiles)
+        {
+            if (profile.MatchFailures(processName, title, className) is { Count: > 0 } failed) result.Add((profile, failed));
+        }
+        return result;
+    }
+
     /// <summary>True when a game profile for this process turned the "agent is driving" overlay off.</summary>
     public bool IsOverlaySuppressedFor(string? processName)
         => GameProfiles.Any(p => !p.Overlay && p.Validate() == null && p.ProcessMatches(processName));

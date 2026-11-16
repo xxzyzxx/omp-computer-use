@@ -146,13 +146,29 @@ applies right now (`mode: "desktop"` or `"game"`).
 
 ```
 launcher (snapshot/click as usual) → start the game
-windows_game_status                                   → wait until a game window is listed
+windows_game_status                                   → before ANY gameplay input: is it under games?
 windows_focus      { "window": "w7", "state": "maximized" }
 windows_screenshot { "window": "w7" }                 → look (client area of the game)
 windows_game_input { "events": [...], "screenshot": true }
 ...
 windows_close      { "window": "w7" }                 → then back to the launcher / files
 ```
+
+After launching a game, call `windows_game_status` before sending it anything, and
+read `detection`:
+
+- `matched` — the game is under `games`. Focus it and use `windows_game_input` for
+  everything inside it, gameplay and menus alike; look with `windows_screenshot`.
+- `candidate_unmatched` — a window of the game's process is open but failed a
+  profile's title/class constraint; `candidates` shows its actual `windowClass` and
+  what failed. If that is the game (compare with `windows_list_windows`), the profile
+  is wrong, not the launch: do not fall back to `windows_click` / `windows_key`. Fix
+  `gameProfiles` in config.json to the reported values, restart the MCP server (config
+  is read only at startup), and check `windows_game_status` again. Window classes vary
+  between builds of the same game (Minecraft: `GLFW30` or `SDL_app`), so never guess.
+- `none` — no window of a profiled process exists. If the game is visibly open
+  anyway, its exe is not in any profile: find it with `windows_list_windows` and tell
+  the user which profile is missing.
 
 `windows_game_input` runs a timed sequence inside the server, so put a whole
 manoeuvre in one call instead of one event per call:
@@ -174,13 +190,17 @@ manoeuvre in one call instead of one event per call:
   into an in-game text box that is already open.
 - No snapshot, refs, marks or `windows_wait stable` on a game: use `wait` events,
   then a screenshot, and verify from the picture.
+- After anything that changes the screen (opening or closing a menu, joining a world,
+  a loading screen), take a screenshot and confirm where you are before the next
+  input. Coordinates and assumptions from the previous screen are stale.
 - Held keys are released at the end of the call unless `keep_held: true`; call
   `{"release_all": true}` if unsure.
 - `status: game_exited`, or a process with `exitCode` in `windows_game_status`, means
   the game is gone: return to the desktop tools. Crash details are in the game's own
   log files — read them with file tools, not the GUI.
 - `not_game_window` means you aimed game input at an ordinary window: use
-  `windows_click` / `windows_key` there instead.
+  `windows_click` / `windows_key` there instead. `game_profile_mismatch` is different:
+  the window may well be the game, see `candidate_unmatched` above.
 
 ## YOLO mode
 

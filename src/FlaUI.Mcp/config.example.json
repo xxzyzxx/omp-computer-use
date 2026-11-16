@@ -69,8 +69,11 @@
   // Game mode: windows matching an entry get hardware-level input (windows_game_input: scan-code keys,
   // relative mouse motion) and a client-area screen capture. Everything else keeps the UI Automation path.
   // Empty = game mode off. A window matches when the process matches and, if given, the title and
-  // windowClass regexes match. Example for Minecraft Java (the game window is javaw.exe with class GLFW30;
-  // matching the class keeps other Java windows out):
+  // windowClass regexes match. The class comes from the windowing library of the build, so read it from the
+  // running window (windows_game_status lists unmatched candidates with their actual class): Minecraft Java
+  // is javaw.exe with GLFW30 on modern builds and SDL_app on GT: New Horizons 2.9.0. Matching the class
+  // keeps other Java windows out. Restart the server after editing; config is read at startup only.
+  //   { "name": "gtnh", "process": "javaw.exe", "title": "^GT: New Horizons", "windowClass": "^SDL_app$" }
   //   { "name": "minecraft", "process": "javaw.exe", "windowClass": "^GLFW30$",
   //     "capture": "screen",            // "screen" (client area copied while in front) or "printwindow"
   //     "overlay": true,                // false hides the "agent is driving" frame for this game
