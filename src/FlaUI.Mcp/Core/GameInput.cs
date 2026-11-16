@@ -149,11 +149,13 @@ public static class GameInput
         Send(MouseInput(MOUSEEVENTF_MOVE, dx, dy));
     }
 
-    /// <summary>Wheel notches; positive scrolls up (away from the user).</summary>
-    public static void Scroll(int notches)
+    /// <summary>
+    /// One wheel notch; up scrolls away from the user. Always a single WHEEL_DELTA: games such as Minecraft
+    /// treat each wheel event as one step whatever its size, so several notches are several events.
+    /// </summary>
+    public static void ScrollNotch(bool up)
     {
-        if (notches == 0) return;
-        Send(MouseInput(MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)(notches * WHEEL_DELTA))));
+        Send(MouseInput(MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)(up ? WHEEL_DELTA : -WHEEL_DELTA))));
     }
 
     /// <summary>Types one UTF-16 code unit as a Unicode packet (chat boxes, text fields inside the game).</summary>

@@ -47,6 +47,7 @@ public sealed record GameEvent(GameEventKind Kind)
     {
         GameEventKind.KeyTap or GameEventKind.Click or GameEventKind.MouseMove or GameEventKind.Wait => Ms,
         GameEventKind.Text => (Text?.Length ?? 0) * GameSequence.TextCharMs,
+        GameEventKind.Scroll => Math.Abs(Amount) * GameSequence.ScrollNotchMs,
         _ => 0
     };
 
@@ -80,6 +81,7 @@ public static class GameSequence
     public const int MaxTextChars = 256;
     public const int DefaultTapMs = 50;
     public const int TextCharMs = 12;
+    public const int ScrollNotchMs = 15;
 
     private const string Shape =
         "Each event is {\"do\": ...}: key_down/key_up {key}; key {key, hold_ms}; mouse_move {dx, dy, ms}; " +

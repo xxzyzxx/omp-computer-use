@@ -367,7 +367,12 @@ public sealed class GameInputTool : ToolBase
                 await Task.Delay(30, ctx.Cancel);
                 break;
             case GameEventKind.Scroll:
-                GameInput.Scroll(ev.Amount);
+                for (var notch = 0; notch < Math.Abs(ev.Amount); notch++)
+                {
+                    ctx.ThrowIfCancelled();
+                    GameInput.ScrollNotch(up: ev.Amount > 0);
+                    await Task.Delay(GameSequence.ScrollNotchMs, ctx.Cancel);
+                }
                 break;
             case GameEventKind.Text:
                 foreach (var c in ev.Text ?? "")
