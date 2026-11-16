@@ -39,7 +39,9 @@ public sealed class GameProcessTracker : IDisposable
             try
             {
                 process = Process.GetProcessById((int)window.Pid);
-                _ = process.HasExited; // opens and caches the handle now, while the process is alive
+                // SafeHandle opens a handle the Process object keeps. HasExited alone reopens the pid on every
+                // call, which fails once the process is gone and loses the exit code.
+                _ = process.SafeHandle;
             }
             catch
             {
