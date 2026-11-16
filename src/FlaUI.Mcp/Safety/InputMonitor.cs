@@ -79,7 +79,15 @@ public sealed class InputMonitor : IDisposable
                 var msg = (uint)wParam.ToInt64();
                 if (msg == Native.WM_MOUSEMOVE)
                 {
-                    if (!_hasLastMove ||
+                    if (Environment.TickCount64 < GameInput.MouseMoveYieldSuppressedUntil)
+                    {
+                        // A game input sequence is running against a cursor-grabbing game: its own
+                        // re-centring must not read as user activity. Buttons and keys still count.
+                        _lastX = info.pt.X;
+                        _lastY = info.pt.Y;
+                        _hasLastMove = true;
+                    }
+                    else if (!_hasLastMove ||
                         Math.Abs(info.pt.X - _lastX) >= _deadZonePx ||
                         Math.Abs(info.pt.Y - _lastY) >= _deadZonePx)
                     {

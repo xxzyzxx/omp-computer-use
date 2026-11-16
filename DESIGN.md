@@ -116,6 +116,35 @@ registry returns without waiting indefinitely; every later input checks cancella
 On a kill, a cooperative batch gets at most 50 ms to return its partial ledger.
 The response owner audits the returned outcome, never a late worker completion.
 
+## Game mode is a second path, selected by the window
+
+Games break three assumptions of the UIA path: there is no tree, virtual-key
+`SendInput` is often ignored (GLFW identifies a key by the scan code in `WM_KEYDOWN`;
+Raw Input and DirectInput read hardware codes), and a mouse-look camera reads relative
+motion that an absolute cursor move never produces. Rather than teach every existing
+tool a game branch, game mode adds two tools and one capture branch, all keyed on the
+target window matching a `gameProfiles` entry. No profile, no change: the existing
+tools, their input route and `PrintWindow` capture are untouched for every other
+window, and `windows_game_input` refuses anything that is not a game window.
+
+Input is a server-side timed sequence, not one event per call. A model round trip
+takes seconds; holding W while turning and clicking has to happen inside one call.
+Held input goes through its own tracker that `HeldInput.ReleaseAll` (kill switch,
+timeouts) also drains, and a 250 ms watchdog releases it when the game window stops
+being the foreground window or after 60 s — a game that crashes mid-hold must not
+leave W down in the launcher.
+
+Capture is a screen copy of the client area while the game is in front. `PrintWindow`
+returns blank or stale frames for OpenGL/DirectX surfaces, and its blank-detection
+fallback cannot see "stale". The compositor's output is right for windowed, maximized
+and borderless games. It is not right for an occluded game or exclusive fullscreen;
+those need Windows.Graphics.Capture / Desktop Duplication, which is not implemented.
+
+The user-input yield stays on, with one exception: while a sequence runs, mouse
+*movement* is not counted, because a cursor-grabbing game re-centres the pointer and
+that can read as the user moving the mouse. Keys, buttons and the kill switch still
+stop the agent.
+
 ## `windows_list_windows` is ungated
 
 Listing top-level windows reveals titles and pids but grants no control and no

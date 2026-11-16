@@ -127,11 +127,28 @@ public sealed class ServerConfig
         "Notion.exe", "Figma.exe", "Postman.exe", "Signal.exe", "WhatsApp.exe", "electron.exe", "Cursor.exe"
     };
 
+    /// <summary>
+    /// Game windows that get the hardware-input path (windows_game_input) and client-area screen capture.
+    /// Empty by default: with no profiles the server behaves exactly as it does for ordinary applications.
+    /// </summary>
+    [JsonPropertyName("gameProfiles")]
+    public List<GameProfile> GameProfiles { get; set; } = new();
+
     // Derived from the settings above; never written to or read from config.json.
     [JsonIgnore]
     public bool IsBlockedAppsAllowed => Yolo || AllowBlockedApps;
     [JsonIgnore]
     public bool IsPasswordGuardActive => PasswordGuard && !Yolo;
+
+    /// <summary>First game profile a window matches (process, then optional title/class regexes), or null.</summary>
+    public GameProfile? MatchGame(string? processName, string? title, string? className)
+        => GameProfiles.FirstOrDefault(p => p.Matches(processName, title, className));
+
+    public GameProfile? MatchGame(WindowInfo window) => MatchGame(window.ProcessName, window.Title, window.ClassName);
+
+    /// <summary>True when a game profile for this process turned the "agent is driving" overlay off.</summary>
+    public bool IsOverlaySuppressedFor(string? processName)
+        => GameProfiles.Any(p => !p.Overlay && p.Validate() == null && p.ProcessMatches(processName));
 
     public bool IsUia2App(string? processName)
         => processName != null && Uia2Apps.Any(a => string.Equals(a, processName, StringComparison.OrdinalIgnoreCase));
@@ -264,6 +281,16 @@ public static class ConfigLoader
         {
             notes.Add($"unknown prompts mode '{config.Prompts}', using 'dialog'");
             config.Prompts = "dialog";
+        }
+        config.GameProfiles ??= new List<GameProfile>();
+        config.GameProfiles.RemoveAll(p => p == null);
+        foreach (var profile in config.GameProfiles)
+        {
+            profile.Capture = (profile.Capture ?? "screen").Trim().ToLowerInvariant();
+            if (profile.Validate() is { } problem)
+            {
+                notes.Add($"gameProfiles entry '{profile.DisplayName}' is ignored: {problem}");
+            }
         }
         config.MaxScreenshotEdge = Math.Clamp(config.MaxScreenshotEdge, 256, 8192);
         config.IdleResumeSeconds = Math.Max(0, config.IdleResumeSeconds);

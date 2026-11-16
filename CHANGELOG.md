@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Game mode** — an alternate control path that only applies to windows matching a `gameProfiles` entry in `config.json` (empty by default, so existing behaviour is unchanged):
+  - `windows_game_input`: timed sequences of hardware-level input — scan-code key down/up/tap, relative mouse motion (mouse-look), absolute cursor moves in image pixels (menus), buttons, wheel, Unicode text, waits. Refuses non-game windows (`not_game_window`). Held input is tracked by the kill switch and tool timeouts, and a watchdog releases it when the game loses focus or after 60 s.
+  - `windows_game_status`: open game windows (foreground, maximized, responding), which control path applies, and the exit code of game processes seen this session.
+  - Game windows are captured as a client-area screen copy (`method: "screen-client"`) while in front, instead of `PrintWindow`.
+  - Per-profile `overlay` and `ignoreMouseMoveYield` options.
+- `windows_focus` accepts `state: "maximized"`.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

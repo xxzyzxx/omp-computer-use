@@ -24,6 +24,7 @@ public static class ActionTools
         registry.RegisterTool(new ClipboardWriteTool(services));
         registry.RegisterTool(new WaitTool(services));
         registry.RegisterTool(new BatchTool(services));
+        GameTools.Register(registry, services);
     }
 }
 

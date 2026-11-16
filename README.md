@@ -106,11 +106,75 @@ substring, or a process name. Targeting order everywhere: `ref` → `mark` → `
 | `windows_clipboard_write` | Write clipboard text. | `text` |
 | `windows_wait` | Wait for UI quiet / element state before verifying. | `window`, `stable`, `timeout_ms` |
 | `windows_batch` | Run 2+ steps in one call, optionally wait-stable between steps, return a final snapshot diff or screenshot. | `steps`, `wait_stable_between`, `return: "snapshot_diff"\|"screenshot"` |
+| `windows_game_status` | Game mode: open game windows (foreground, maximized, responding), which control path applies, exit codes of game processes seen this session. Ungated. | — |
+| `windows_game_input` | Game mode: timed hardware-level input sequence for a game window only (scan-code keys, relative mouse motion, buttons, wheel, text). | `events`, `window`, `keep_held`, `screenshot`, `release_all` |
 | `windows_request_access` | Ask the human for `view`/`control` on exe names, with a one-line reason; a topmost dialog asks. | `apps`, `tier`, `reason` |
 | `windows_list_access` | Current grants and control lock state. | — |
 | `windows_release` | Drop grants and the control lock when done. | — |
 | `windows_resume` | Clear the user-active pause once the user says go ahead. | — |
 | `windows_status` | Server/safety status: mode, hotkey, grants, audit dir. | — |
+
+## Game mode
+
+Games have no UI Automation tree, usually ignore virtual-key injection, and read the
+mouse as relative motion. Game mode is a second control path for exactly those
+windows; it is off until you add a profile, and it never applies to any other window.
+
+```jsonc
+// %LOCALAPPDATA%\WindowsComputerUse\config.json
+"gameProfiles": [
+  { "name": "minecraft", "process": "javaw.exe", "windowClass": "^GLFW30$" }
+]
+```
+
+A window is a game window when its process matches and, if given, its `title` and
+`windowClass` regexes match. For Minecraft Java the game window is `javaw.exe` with
+class `GLFW30`; matching the class keeps other Java windows (launcher consoles,
+installers) on the normal path, and still works when a modpack renames the title.
+
+The intended loop, with Minecraft as the example:
+
+1. **Desktop path** — drive the launcher with `windows_snapshot` / `windows_click`
+   and start the instance.
+2. `windows_game_status` until a game window is listed, then
+   `windows_focus { window, state: "maximized" }`.
+3. **Game path** — `windows_game_input` for input, `windows_screenshot { window }`
+   to look. One call carries a whole timed sequence:
+
+   ```json
+   {"events": [
+     {"do": "key_down", "key": "w"},
+     {"do": "mouse_move", "dx": 400, "dy": 0, "ms": 300},
+     {"do": "wait", "ms": 1500},
+     {"do": "key_up", "key": "w"},
+     {"do": "click", "button": "right"}
+   ], "screenshot": true}
+   ```
+
+4. When the test is done (or `game_exited` / `windows_game_status` shows the process
+   ended, with its `exitCode`), `windows_close` the game if it is still open and go
+   back to the desktop path to change the pack and relaunch.
+
+Notes:
+
+- `mouse_move` is **relative** (mouse counts): it turns the camera while the game has
+  grabbed the cursor. `mouse_to` is **absolute** in pixels of the latest screenshot:
+  use it in menus and inventories where the cursor is visible.
+- Keys are physical positions sent as scan codes (`w`, `space`, `esc`, `f3`, …). The
+  Windows keys are not available.
+- Game screenshots are the window's **client area** copied from the screen
+  (`method: "screen-client"`), so the game must be in front; otherwise the capture
+  falls back to the normal window path. Exclusive fullscreen is not supported — use
+  a maximized or borderless window.
+- Keys still held when a call ends are released unless `keep_held: true`. Held input
+  is always released by the kill switch, a tool timeout, the game losing focus, or
+  after 60 s.
+- All normal gates apply: the game's exe needs a `control` grant, real keyboard or
+  mouse-button input pauses the agent, and the kill switch aborts the sequence.
+- `windows_snapshot`, refs, marks and `windows_wait stable` do not work on a game
+  (no tree; the picture never settles). Use `wait` events and screenshots.
+- Injected input can trip anti-cheat. Use this on your own builds and offline or
+  private test worlds.
 
 ## Coordinate model
 
@@ -156,6 +220,7 @@ CLI flags and environment variables override the file.
 | `passwordGuard` | `true` | Refuse to type into UIA password fields. Off under YOLO. | — |
 | `auditDir` | `%LOCALAPPDATA%\WindowsComputerUse\audit` | Append-only JSONL audit log; empty disables. | `--audit-dir` / `--no-audit` |
 | `grantsPath` | `%LOCALAPPDATA%\WindowsComputerUse\grants.json` | Persisted "always" grants. | — |
+| `gameProfiles` | `[]` | Game windows that get `windows_game_input` and client-area capture: `{name, process, title?, windowClass?, capture, overlay, ignoreMouseMoveYield}`. See Game mode. | — |
 | `electronApps` | see example | Electron/Chromium hosts that get the thin-tree hint. | — |
 
 ## Safety model

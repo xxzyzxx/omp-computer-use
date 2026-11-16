@@ -66,6 +66,17 @@
   // Persisted "always" grants.
   "grantsPath": "%LOCALAPPDATA%\\WindowsComputerUse\\grants.json",
 
+  // Game mode: windows matching an entry get hardware-level input (windows_game_input: scan-code keys,
+  // relative mouse motion) and a client-area screen capture. Everything else keeps the UI Automation path.
+  // Empty = game mode off. A window matches when the process matches and, if given, the title and
+  // windowClass regexes match. Example for Minecraft Java (the game window is javaw.exe with class GLFW30;
+  // matching the class keeps other Java windows out):
+  //   { "name": "minecraft", "process": "javaw.exe", "windowClass": "^GLFW30$",
+  //     "capture": "screen",            // "screen" (client area copied while in front) or "printwindow"
+  //     "overlay": true,                // false hides the "agent is driving" frame for this game
+  //     "ignoreMouseMoveYield": true }  // cursor-grab re-centring does not count as user activity
+  "gameProfiles": [],
+
   // Electron/Chromium hosts: thin trees get a hint to use marks and --force-renderer-accessibility.
   "electronApps": [
     "Code.exe", "VSCodium.exe", "Discord.exe", "slack.exe", "Teams.exe", "ms-teams.exe", "obsidian.exe",

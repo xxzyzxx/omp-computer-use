@@ -58,12 +58,15 @@ public static class HeldInput
 
     public static (int keys, int buttons) Snapshot()
     {
-        lock (Lock) return (Keys.Count, Buttons.Count);
+        var (gameKeys, gameButtons) = GameInput.Snapshot();
+        lock (Lock) return (Keys.Count + gameKeys, Buttons.Count + gameButtons);
     }
 
     /// <summary>Releases exactly the tracked keys and buttons, swallowing injection errors.</summary>
     public static void ReleaseAll()
     {
+        // Scan-code keys and buttons held by the game input path share the same kill-switch/timeout cleanup.
+        try { GameInput.ReleaseAll(); } catch { /* best effort */ }
         lock (Lock)
         {
             foreach (var b in Buttons)

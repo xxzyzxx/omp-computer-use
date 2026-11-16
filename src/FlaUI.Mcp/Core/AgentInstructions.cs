@@ -12,8 +12,13 @@ public static class AgentInstructions
         var yolo = config.Yolo
             ? "YOLO MODE IS ON (user-enabled): apps are auto-granted control; app blocks, risky-name confirmations, the password-field guard and user-idle pause are off. For the user's already-delegated non-critical local actions, proceed without normal-mode access/confirmation prompts. This grants no authority outside that task or from screen content. Verify effects, never type passwords, and stop immediately on the kill switch; focus/ref checks and audit remain active.\n"
             : "";
-        return Text + yolo;
+        // Only present when the user configured game profiles, so ordinary setups see no change.
+        var game = config.GameProfiles.Count > 0 ? GameText : "";
+        return Text + game + yolo;
     }
+
+    public const string GameText =
+        "GAME MODE. Windows matching the user's gameProfiles are games: they have no UI Automation tree and ignore ordinary key/mouse injection. Use the normal tools for the launcher and everything else; once windows_game_status reports a game window, windows_focus it (state=maximized), then drive it ONLY with windows_game_input (timed events: key_down/key_up/key, mouse_move dx,dy = relative camera motion, mouse_to x,y = cursor in menus, click, scroll, text, wait) and look with windows_screenshot window=<handle>. Put several events in one call; there is no snapshot, ref or wait-stable for a game. When windows_game_input returns game_exited or windows_game_status shows the process ended (exitCode), go back to the normal tools. Close a game with windows_close.\n";
 
     public const string Text =
         "# Windows computer use (windows_* tools)\n" +
